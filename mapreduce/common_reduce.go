@@ -1,5 +1,87 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"os"
+	"sort"
+)
+
+func readIntermediateFile(jobName string, reduceTask int, nMap int) []KeyValue {
+	readed := []KeyValue{}
+	for i := 0; i < nMap; i++ {
+		fileName := reduceName(jobName, i, reduceTask)
+		file, err := os.Open(fileName)
+		if err != nil {
+			debug("doReduce err %v", err)
+			return nil
+		}
+		defer file.Close()
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			err := dec.Decode(&kv)
+			if err != nil {
+				break
+			}
+			readed = append(readed, kv)
+		}
+	}
+	return readed
+}
+
+type reduceParam struct {
+	key    string
+	values []string
+}
+
+func getRecudeParams(readed []KeyValue) []reduceParam {
+	if len(readed) == 0 {
+		return nil
+	}
+	params := []reduceParam{}
+	preKey := readed[0].Key
+	values := []string{readed[0].Value}
+	for i := 1; i < len(readed); i++ {
+		data := readed[i]
+		if data.Key == preKey {
+			values = append(values, data.Value)
+		} else {
+			params = append(params, reduceParam{
+				key:    preKey,
+				values: values,
+			})
+			values = []string{readed[i].Value}
+			preKey = data.Key
+		}
+	}
+	params = append(params, reduceParam{
+		key:    preKey,
+		values: values,
+	})
+	return params
+}
+
+func getReduceRets(params []reduceParam, reduceF func(key string, values []string) string) []KeyValue {
+	rets := []KeyValue{}
+	for _, param := range params {
+		ret := reduceF(param.key, param.values)
+		rets = append(rets, KeyValue{
+			Key:   param.key,
+			Value: ret,
+		})
+	}
+	return rets
+}
+
+func writeOutFile(reduceRets []KeyValue, outFile string) {
+	file, _ := os.Create(outFile)
+	defer file.Close()
+	enc := json.NewEncoder(file)
+	for _, ret := range reduceRets {
+		enc.Encode(&ret)
+	}
+}
+
 func doReduce(
 	jobName string, // the name of the whole MapReduce job
 	reduceTask int, // which reduce task this is
@@ -44,4 +126,15 @@ func doReduce(
 	//
 	// Your code here (Part I).
 	//
+
+	readed := readIntermediateFile(jobName, reduceTask, nMap)
+	if len(readed) == 0 {
+		return
+	}
+	sort.Slice(readed, func(i, j int) bool {
+		return readed[i].Key < readed[j].Key
+	})
+	params := getRecudeParams(readed)
+	reduceRets := getReduceRets(params, reduceF)
+	writeOutFile(reduceRets, outFile)
 }

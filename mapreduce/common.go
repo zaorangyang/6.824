@@ -2,11 +2,12 @@ package mapreduce
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 )
 
 // Debugging enabled?
-const debugEnabled = false
+const debugEnabled = true
 
 // debug() will only print if debugEnabled is true
 func debug(format string, a ...interface{}) (n int, err error) {
@@ -40,4 +41,15 @@ func reduceName(jobName string, mapTask int, reduceTask int) string {
 // mergeName constructs the name of the output file of reduce task <reduceTask>
 func mergeName(jobName string, reduceTask int) string {
 	return "mrtmp." + jobName + "-res-" + strconv.Itoa(reduceTask)
+}
+
+func PathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }

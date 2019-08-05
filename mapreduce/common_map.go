@@ -1,7 +1,10 @@
 package mapreduce
 
 import (
+	"encoding/json"
 	"hash/fnv"
+	"io/ioutil"
+	"os"
 )
 
 func doMap(
@@ -53,6 +56,36 @@ func doMap(
 	//
 	// Your code here (Part I).
 	//
+
+	// 创建中继的files, 以及封装的encoder
+	var encoders = map[string] *json.Encoder{}
+	for i:=0; i<nReduce; i++ {
+		fileName := reduceName(jobName, mapTask, i)
+		file, _ := os.Create(fileName)
+		enc := json.NewEncoder(file)
+		encoders[fileName] = enc
+		defer file.Close()
+	}
+
+	// 读inFile，并将其导入到mapF中,然后获得mapF的返回值
+	content, err := ioutil.ReadFile(inFile)
+	if err != nil {
+		debug("doMap read inFile err %v", err)
+		return
+	}
+	generated := mapF(inFile, string(content))
+
+	// 遍历返回值，根据key判断kv输入哪个中继文件，并写入
+	for _, data := range generated {
+		r := ihash(data.Key) % nReduce
+		fileName := reduceName(jobName, mapTask, r)
+		enc := encoders[fileName]
+		err := enc.Encode(&data)
+		if err != nil {
+			debug("doMap Encode err %v", err)
+			return
+		}
+	}
 }
 
 func ihash(s string) int {
