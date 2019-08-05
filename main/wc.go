@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"github.com/Drewryz/6.824/mapreduce"
 	"os"
+	"strconv"
+	"strings"
+	"unicode"
 )
 
 //
@@ -15,6 +18,20 @@ import (
 //
 func mapF(filename string, contents string) []mapreduce.KeyValue {
 	// Your code here (Part II).
+	if len(contents) == 0 {
+		return nil
+	}
+	keys := strings.FieldsFunc(contents, func(r rune) bool {
+		return !unicode.IsLetter(r)
+	})
+	keyValues := []mapreduce.KeyValue{}
+	for _, key := range keys {
+		keyValues = append(keyValues, mapreduce.KeyValue{
+			Key:   key,
+			Value: "1",
+		})
+	}
+	return keyValues
 }
 
 //
@@ -24,6 +41,15 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 //
 func reduceF(key string, values []string) string {
 	// Your code here (Part II).
+	var count int64
+	for _, val := range values {
+		num, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return ""
+		}
+		count += num
+	}
+	return fmt.Sprintf("%d", count)
 }
 
 // Can be run in 3 ways:
