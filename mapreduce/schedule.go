@@ -62,10 +62,10 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 }
 
 func callWorker(workers chan string, args *DoTaskArgs, wg *sync.WaitGroup) {
-	var replay bool
 	worker := <-workers
-	call(worker, "Worker.DoTask", args, &replay)
+	for !call(worker, "Worker.DoTask", args, nil) {
+		worker = <-workers
+	}
 	workers <- worker
-	fmt.Println(replay)
 	wg.Done()
 }
