@@ -83,6 +83,7 @@ func TestReElection2A(t *testing.T) {
 	cfg.end()
 }
 
+// 做一次Start(), 然后在没有异常的情况下，检查是否所有的节点都提交了Start()的日志条目
 func TestBasicAgree2B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)

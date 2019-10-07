@@ -174,7 +174,7 @@ func getMajorityMatchIndex(matchIndex []uint64) uint64 {
 	for i := 0; i < len(matchIndex); i++ {
 		count := 0
 		for j := 0; j < len(matchIndex); j++ {
-			if matchIndex[i] >= matchIndex[j] {
+			if matchIndex[i] <= matchIndex[j] {
 				count++
 			}
 		}
@@ -234,6 +234,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	} else if args.CurrentTerm > rf.currentTerm {
+		// 每个server在同一时段只能投票一次，因此这里要判断args的term
 		lastLogEntry, lastLogIndex := rf.log.getLastLogEntry()
 		if logUptodate(args.LastLogTerm, args.LastLogIndex, lastLogEntry.Term, lastLogIndex) {
 			reply.VoteGranted = true
@@ -602,7 +603,7 @@ func (rf *Raft) leaderFlow() {
 		// 更新commit
 		rf.mu.Lock()
 		match := getMajorityMatchIndex(rf.matchIndex)
-		if match > rf.commitIndex {
+		if rf.log.getLogEntryByIndex(match).Term == rf.currentTerm && match > rf.commitIndex {
 			rf.commitIndex = match
 			select {
 			case rf.commitAlterCh <- struct{}{}:
