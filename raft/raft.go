@@ -83,6 +83,7 @@ type Raft struct {
 	me            int                 // this peer's index into peers[]
 	applyCh       chan ApplyMsg
 	commitAlterCh chan struct{}
+	// receiveRpcCh通道用于维持follower的状态
 	receiveRpcCh  chan struct{}
 	rand          *rand.Rand
 
@@ -216,12 +217,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
-	if rf.role == Follower {
-		select {
-		case rf.receiveRpcCh <- struct{}{}:
-		default:
-		}
-	}
 	// 当前节点的term更大，返回false
 	if args.CurrentTerm < rf.currentTerm {
 		return
@@ -247,6 +242,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.CurrentTerm
 		if rf.role != Follower {
 			rf.role = Follower
+		}
+	}
+
+	// 当前节点投票给其他节点时，当前节点维持follower状态
+	if rf.role == Follower && reply.VoteGranted {
+		select {
+		case rf.receiveRpcCh <- struct{}{}:
+		default:
 		}
 	}
 	return
@@ -362,12 +365,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Success = false
 	rf.mu.Lock()
 	reply.Term = rf.currentTerm
-	if rf.role == Follower {
-		select {
-		case rf.receiveRpcCh <- struct{}{}:
-		default:
-		}
-	}
 
 	// TODO: 此次if逻辑混乱，需要更改
 	// 这个rpc调用，只要返回false，一定有相应的false原因
@@ -378,6 +375,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.mu.Unlock()
 		return
 	}
+	// 收到当前leader的append rpc请求，当前节点保持follower状态
+	if rf.role == Follower {
+		select {
+		case rf.receiveRpcCh <- struct{}{}:
+		default:
+		}
+	}
+
 	if args.CurrentTerm > rf.currentTerm {
 		rf.currentTerm = args.CurrentTerm
 		if rf.role != Follower {
@@ -506,6 +511,10 @@ func (rf *Raft) doApplyMsg() {
 
 func (rf *Raft) followerFlow() {
 	for {
+		// 当follower一段时间内：
+		// 1. 没有投票给其他节点
+		// 2. 没有收到当前leader的append rpc请求
+		// 会转换为candidate.
 		electionTimeout := getRandomDuration(rf.rand, ElectionTimeoutLower, ElectionTimeoutUpper)
 		timer := time.NewTimer(electionTimeout)
 		select {
