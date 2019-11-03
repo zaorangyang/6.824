@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"errors"
 	"log"
 )
 
@@ -30,12 +31,14 @@ type raftLog struct {
 	log []*LogEntry
 }
 
+var noLogErr = errors.New("no log")
+
 func newRaftLog(capacity uint64) *raftLog {
 	log := &raftLog{
 		capacity: capacity,
-		used:     0,
+		used:     1,
 		in:       1,
-		out:      1,
+		out:      0,
 		log:      make([]*LogEntry, capacity),
 	}
 	log.log[0] = &LogEntry{
@@ -44,41 +47,63 @@ func newRaftLog(capacity uint64) *raftLog {
 	return log
 }
 
+func (log *raftLog) getLastLogEntryIndex() uint64 {
+	return log.in - 1
+}
+
 func (log *raftLog) getLastLogEntry() (*LogEntry, uint64) {
+	if log.used == 0 {
+		return nil, 0
+	}
 	return log.log[(log.in-1)%log.capacity], log.in - 1
 }
 
 func (log *raftLog) getLogEntryByIndex(index uint64) *LogEntry {
-	return log.log[index%log.capacity]
-	//if log.used <= 0 {
-	//	return nil
-	//}
-	//if index >= log.out && index <= log.in {
-	//	return log.log[index%log.capacity]
-	//}
-	//if log.in < log.out {
-	//	if index >= log.out || index <= log.in {
-	//		return log.log[index%log.capacity]
-	//	}
-	//}
+	if index >= log.out && index < log.in {
+		return log.log[index%log.capacity]
+	}
+	return nil
 }
 
+// 获得[from, to)区间内的日志
 func (log *raftLog) getLogEntryByRange(from uint64, to uint64) []*LogEntry {
 	entries := []*LogEntry{}
+	if !(from >= log.out && to <= log.in) {
+		return nil
+	}
 	for i := from; i < to; i++ {
 		entries = append(entries, log.log[i])
 	}
 	return entries
 }
 
-// 删除index+1到in的所有日志
-func (log *raftLog) deleteEntriesByIndex(index uint64) {
-	log.in = index + 1
+// 删除preIndex+1到in的所有日志
+func (log *raftLog) deleteEntriesByIndex(preIndex uint64) {
+	oldIn := log.in
+	log.in = preIndex + 1
+	log.used -= oldIn - log.in
 }
 
-func (log *raftLog) appendEntries(entries []*LogEntry) {
+// 当前节点的日志长度不足，或者日志不匹配时返回false
+func (log *raftLog) compareEntries(preIndex uint64, entries []*LogEntry) bool {
+	curIndex := preIndex + 1
+	for i := 0; i < len(entries); i++ {
+		if curIndex >= log.in {
+			return false
+		}
+		if log.getLogEntryByIndex(curIndex).Term != entries[i].Term {
+			return false
+		}
+	}
+	return true
+}
+
+// 追加日志切片，返回开始追加的日志位置
+func (log *raftLog) appendEntries(entries []*LogEntry) uint64 {
+	startIndex := log.in
 	for _, entry := range entries {
 		log.log[log.in] = entry
 		log.in++
 	}
+	return startIndex
 }

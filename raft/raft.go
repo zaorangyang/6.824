@@ -84,8 +84,8 @@ type Raft struct {
 	applyCh       chan ApplyMsg
 	commitAlterCh chan struct{}
 	// receiveRpcCh通道用于维持follower的状态
-	receiveRpcCh  chan struct{}
-	rand          *rand.Rand
+	receiveRpcCh chan struct{}
+	rand         *rand.Rand
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -402,12 +402,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	reply.Success = true
-	// 此时，leader日志和当前节点日志达成一致, 删除不一致的日志
 	rf.mu.Lock()
-	rf.log.deleteEntriesByIndex(args.PrevLogIndex)
-	rf.log.appendEntries(args.Entries)
+	// 如果要复制的日志与当前节点的日志不一致，复制
+	if !rf.log.compareEntries(args.PrevLogIndex, args.Entries) {
+		rf.log.deleteEntriesByIndex(args.PrevLogIndex)
+		rf.log.appendEntries(args.Entries)
+	}
 	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = Min(args.LeaderCommit, rf.log.in-1)
+		rf.commitIndex = Min(args.LeaderCommit, rf.log.getLastLogEntryIndex())
 		select {
 		case rf.commitAlterCh <- struct{}{}:
 		default:
@@ -473,10 +475,19 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, r
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
-	term := -1
-	isLeader := true
 
-	// Your code here (2B).
+	term, isLeader := rf.GetState()
+	if !isLeader {
+		return index, term, isLeader
+	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	index = int(rf.log.appendEntries([]*LogEntry{
+		&LogEntry{
+			Command: command,
+			Term:    uint64(term),
+		},
+	}))
 
 	return index, term, isLeader
 }
@@ -557,7 +568,7 @@ func (rf *Raft) candidateFlow() {
 
 func (rf *Raft) leaderFlow() {
 	for i := 0; i < len(rf.nextIndex); i++ {
-		rf.nextIndex[i] = rf.log.in
+		rf.nextIndex[i] = rf.log.getLastLogEntryIndex() + 1
 	}
 	for i := 0; i < len(rf.matchIndex); i++ {
 		rf.matchIndex[i] = 0
@@ -574,13 +585,14 @@ func (rf *Raft) leaderFlow() {
 			if i == rf.me {
 				continue
 			}
-			if rf.log.in-1 >= rf.nextIndex[i] {
+			if rf.log.getLastLogEntryIndex() >= rf.nextIndex[i] {
 				args := &AppendEntriesArgs{
 					CurrentTerm:  rf.currentTerm,
 					LeaderId:     rf.me,
 					PrevLogIndex: rf.nextIndex[i] - 1,
 					PrevLogTerm:  rf.log.getLogEntryByIndex(rf.nextIndex[i] - 1).Term,
-					Entries:      rf.log.getLogEntryByRange(rf.nextIndex[i], rf.log.in),
+					Entries:      rf.log.getLogEntryByRange(rf.nextIndex[i], rf.log.getLastLogEntryIndex()+1),
+					LeaderCommit: rf.commitIndex,
 				}
 				reply := &AppendEntriesReply{}
 				go rf.sendAndSolveAppendEntries(i, args, reply)
