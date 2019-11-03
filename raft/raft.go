@@ -21,6 +21,7 @@ import (
 	"github.com/Drewryz/6.824/labrpc"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -424,8 +425,23 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 // TODO: 转换成follower应该如何优雅地做
-func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) sendAndSolveAppendEntries(server int, isHeartbeat bool) {
 	for {
+		rf.mu.Lock()
+		args := &AppendEntriesArgs{
+			CurrentTerm:  rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: rf.nextIndex[server] - 1,
+			PrevLogTerm:  rf.log.getLogEntryByIndex(rf.nextIndex[server] - 1).Term,
+			LeaderCommit: rf.commitIndex,
+		}
+		if !isHeartbeat {
+			args.Entries = rf.log.getLogEntryByRange(rf.nextIndex[server], rf.log.getLastLogEntryIndex()+1)
+		}
+		nextIndexBak := rf.nextIndex[server]
+		matchIndexBak := rf.matchIndex[server]
+		rf.mu.Unlock()
+		reply := &AppendEntriesReply{}
 		ok := rf.sendAppendEntries(server, args, reply)
 		// rpc调用失败
 		if !ok {
@@ -434,8 +450,9 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, r
 		rf.mu.Lock()
 		// 节点返回成功
 		if reply.Success {
-			rf.nextIndex[server] += uint64(len(args.Entries))
-			rf.matchIndex[server] = rf.nextIndex[server] - 1
+			// 由于遇到网络延迟，使返回的结果失去时效性，则不更改nextIndex和matchIndex
+			atomic.CompareAndSwapUint64(&rf.nextIndex[server], nextIndexBak, nextIndexBak+uint64(len(args.Entries)))
+			atomic.CompareAndSwapUint64(&rf.matchIndex[server], matchIndexBak, rf.nextIndex[server]-1)
 			rf.mu.Unlock()
 			return
 		}
@@ -452,8 +469,6 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, r
 		// PreLogIndex位置的日志与leader不一致
 		if reply.FailReason == LogUnconsistent {
 			rf.nextIndex[server] -= 1
-			args.PrevLogIndex -= 1
-			args.CurrentTerm = rf.log.getLogEntryByIndex(args.PrevLogIndex - 1).Term
 		}
 		rf.mu.Unlock()
 	}
@@ -502,19 +517,28 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 }
 
-// TODO: ApplyMsg如何构造没有弄清楚
 func (rf *Raft) doApplyMsg() {
 	for {
 		select {
 		case <-rf.commitAlterCh:
-			for rf.commitIndex > rf.lastApplied {
+			for {
+				rf.mu.Lock()
+				if rf.commitIndex <= rf.lastApplied {
+					rf.mu.Unlock()
+					break
+				}
 				applyMsg := ApplyMsg{
 					CommandValid: true,
 					Command:      rf.log.getLogEntryByIndex(rf.lastApplied + 1).Command,
 					CommandIndex: int(rf.lastApplied + 1),
 				}
+				rf.mu.Unlock()
+
 				rf.applyCh <- applyMsg
+
+				rf.mu.Lock()
 				rf.lastApplied++
+				rf.mu.Unlock()
 			}
 		}
 	}
@@ -586,16 +610,7 @@ func (rf *Raft) leaderFlow() {
 				continue
 			}
 			if rf.log.getLastLogEntryIndex() >= rf.nextIndex[i] {
-				args := &AppendEntriesArgs{
-					CurrentTerm:  rf.currentTerm,
-					LeaderId:     rf.me,
-					PrevLogIndex: rf.nextIndex[i] - 1,
-					PrevLogTerm:  rf.log.getLogEntryByIndex(rf.nextIndex[i] - 1).Term,
-					Entries:      rf.log.getLogEntryByRange(rf.nextIndex[i], rf.log.getLastLogEntryIndex()+1),
-					LeaderCommit: rf.commitIndex,
-				}
-				reply := &AppendEntriesReply{}
-				go rf.sendAndSolveAppendEntries(i, args, reply)
+				go rf.sendAndSolveAppendEntries(i, false)
 			}
 		}
 		rf.mu.Unlock()
@@ -609,14 +624,7 @@ func (rf *Raft) leaderFlow() {
 				if i == rf.me {
 					continue
 				}
-				args := &AppendEntriesArgs{
-					CurrentTerm:  rf.currentTerm,
-					LeaderId:     rf.me,
-					PrevLogIndex: rf.nextIndex[i] - 1,
-					PrevLogTerm:  rf.log.getLogEntryByIndex(rf.nextIndex[i] - 1).Term,
-				}
-				reply := &AppendEntriesReply{}
-				go rf.sendAndSolveAppendEntries(i, args, reply)
+				go rf.sendAndSolveAppendEntries(i, true)
 			}
 			rf.mu.Unlock()
 		}
