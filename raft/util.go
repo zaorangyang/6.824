@@ -2,11 +2,15 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	"log"
+	"strings"
 )
 
 // Debugging
 const Debug = 1
+
+var ServerId int32 = -1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -84,9 +88,9 @@ func (log *raftLog) deleteEntriesByIndex(preIndex uint64) {
 	log.used -= oldIn - log.in
 }
 
-// 当前节点的日志长度不足，或者日志不匹配时返回false
-func (log *raftLog) compareEntries(preIndex uint64, entries []*LogEntry) bool {
-	curIndex := preIndex + 1
+// 比较当前节点从(preLogIndex, preLogIndex+len(entries)]的日志，当前节点的日志长度不足，或者日志不匹配时返回false
+func (log *raftLog) compareEntries(preLogIndex uint64, entries []*LogEntry) bool {
+	curIndex := preLogIndex + 1
 	for i := 0; i < len(entries); i++ {
 		if curIndex >= log.in {
 			return false
@@ -105,5 +109,15 @@ func (log *raftLog) appendEntries(entries []*LogEntry) uint64 {
 		log.log[log.in] = entry
 		log.in++
 	}
+	log.used += uint64(len(entries))
 	return startIndex
+}
+
+//
+func (log *raftLog) getLogStr() string {
+	logStr := []string{}
+	for i := log.out; i < log.in; i++ {
+		logStr = append(logStr, fmt.Sprintf("(%d:%d)", i, log.log[i%log.capacity]))
+	}
+	return strings.Join(logStr, ",")
 }

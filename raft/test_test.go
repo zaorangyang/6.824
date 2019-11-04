@@ -8,12 +8,15 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"github.com/magiconair/properties/assert"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -85,7 +88,7 @@ func TestReElection2A(t *testing.T) {
 
 // 做一次Start(), 然后在没有异常的情况下，检查是否所有的节点都提交了Start()的日志条目
 func TestBasicAgree2B(t *testing.T) {
-	servers := 5
+	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
@@ -290,8 +293,10 @@ loop:
 	cfg.end()
 }
 
+var Server = 0
+
 func TestRejoin2B(t *testing.T) {
-	servers := 3
+	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
@@ -933,4 +938,12 @@ func TestReliableChurn2C(t *testing.T) {
 
 func TestUnreliableChurn2C(t *testing.T) {
 	internalChurn(t, true)
+}
+
+func TestGetMajorityMatchIndex(t *testing.T) {
+	matchIndex := []uint64{
+		1, 2, 3, 4, 5,
+	}
+	match := getMajorityMatchIndex(matchIndex)
+	assert.Equal(t, match, uint64(3))
 }

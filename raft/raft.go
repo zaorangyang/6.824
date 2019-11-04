@@ -18,8 +18,12 @@ package raft
 //
 
 import (
+	"fmt"
 	"github.com/Drewryz/6.824/labrpc"
 	"math/rand"
+	"os"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -367,7 +371,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	reply.Term = rf.currentTerm
 
-	// TODO: 此次if逻辑混乱，需要更改
+	// TODO: 此处if逻辑混乱，需要更改
 	// 这个rpc调用，只要返回false，一定有相应的false原因
 
 	// 当前节点term更新，返回false
@@ -403,19 +407,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	reply.Success = true
+
 	rf.mu.Lock()
 	// 如果要复制的日志与当前节点的日志不一致，复制
 	if !rf.log.compareEntries(args.PrevLogIndex, args.Entries) {
 		rf.log.deleteEntriesByIndex(args.PrevLogIndex)
 		rf.log.appendEntries(args.Entries)
 	}
+
+	// 此时，leader的日志与当前节点到args.PrevLogIndex+len(args.Entries)为止的日志一致
 	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = Min(args.LeaderCommit, rf.log.getLastLogEntryIndex())
+		// follower在调整commitIndex时，要确保自身的日志与leader日志一致
+		rf.commitIndex = Min(args.LeaderCommit, args.PrevLogIndex+uint64(len(args.Entries)))
 		select {
 		case rf.commitAlterCh <- struct{}{}:
 		default:
 		}
 	}
+
 	rf.mu.Unlock()
 }
 
@@ -425,16 +434,25 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 // TODO: 转换成follower应该如何优雅地做
-func (rf *Raft) sendAndSolveAppendEntries(server int, isHeartbeat bool) {
+func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, isHeartbeat bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			DPrintf("%v", r)
+			debug.PrintStack()
+			DPrintf("[%d] rf.nextIndex[server]= %d || log: %s || rf.role=%d", rf.me, rf.nextIndex[server], rf.log.getLogStr(), rf.role)
+			os.Exit(1)
+		}
+	}()
+
 	for {
 		rf.mu.Lock()
-		args := &AppendEntriesArgs{
-			CurrentTerm:  rf.currentTerm,
-			LeaderId:     rf.me,
-			PrevLogIndex: rf.nextIndex[server] - 1,
-			PrevLogTerm:  rf.log.getLogEntryByIndex(rf.nextIndex[server] - 1).Term,
-			LeaderCommit: rf.commitIndex,
+		// 当前leader可能已经转换为了follower，快速返回
+		if rf.role != Leader {
+			rf.mu.Unlock()
+			return
 		}
+		args.PrevLogIndex = rf.nextIndex[server] - 1
+		args.PrevLogTerm = rf.log.getLogEntryByIndex(rf.nextIndex[server] - 1).Term
 		if !isHeartbeat {
 			args.Entries = rf.log.getLogEntryByRange(rf.nextIndex[server], rf.log.getLastLogEntryIndex()+1)
 		}
@@ -451,8 +469,9 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, isHeartbeat bool) {
 		// 节点返回成功
 		if reply.Success {
 			// 由于遇到网络延迟，使返回的结果失去时效性，则不更改nextIndex和matchIndex
-			atomic.CompareAndSwapUint64(&rf.nextIndex[server], nextIndexBak, nextIndexBak+uint64(len(args.Entries)))
-			atomic.CompareAndSwapUint64(&rf.matchIndex[server], matchIndexBak, rf.nextIndex[server]-1)
+			if atomic.CompareAndSwapUint64(&rf.nextIndex[server], nextIndexBak, nextIndexBak+uint64(len(args.Entries))) {
+				atomic.CompareAndSwapUint64(&rf.matchIndex[server], matchIndexBak, rf.nextIndex[server]-1)
+			}
 			rf.mu.Unlock()
 			return
 		}
@@ -468,7 +487,11 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, isHeartbeat bool) {
 		}
 		// PreLogIndex位置的日志与leader不一致
 		if reply.FailReason == LogUnconsistent {
-			rf.nextIndex[server] -= 1
+			// nextIndex失去时效性，则直接退出
+			if !atomic.CompareAndSwapUint64(&rf.nextIndex[server], nextIndexBak, nextIndexBak-1) {
+				rf.mu.Unlock()
+				return
+			}
 		}
 		rf.mu.Unlock()
 	}
@@ -503,7 +526,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term:    uint64(term),
 		},
 	}))
-
+	rf.nextIndex[rf.me]++
+	rf.matchIndex[rf.me] = rf.nextIndex[rf.me] - 1
 	return index, term, isLeader
 }
 
@@ -590,47 +614,79 @@ func (rf *Raft) candidateFlow() {
 	}
 }
 
+func (rf *Raft) doReplicateLogOrHearbeart(isHeartbeat bool) {
+	// 由于currentTerm可能在处理appendRPC的返回结果时发生改动，故需要记录
+	currentTerm := rf.currentTerm
+	// commitIndex可能会在leder接下来的流程发生改动，因此同样提前记录
+	commitIndex := rf.commitIndex
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+		args := &AppendEntriesArgs{
+			CurrentTerm:  currentTerm,
+			LeaderId:     rf.me,
+			LeaderCommit: commitIndex,
+		}
+		if isHeartbeat || rf.log.getLastLogEntryIndex() >= rf.nextIndex[i] {
+			go rf.sendAndSolveAppendEntries(i, args, isHeartbeat)
+		}
+	}
+}
+
 func (rf *Raft) leaderFlow() {
+	rf.mu.Lock()
 	for i := 0; i < len(rf.nextIndex); i++ {
 		rf.nextIndex[i] = rf.log.getLastLogEntryIndex() + 1
 	}
 	for i := 0; i < len(rf.matchIndex); i++ {
 		rf.matchIndex[i] = 0
 	}
+	rf.mu.Unlock()
+
+	defer func() {
+		if r := recover(); r != nil {
+			DPrintf("%v", r)
+			debug.PrintStack()
+
+			matchIndexStr := []string{}
+			for _, m := range rf.matchIndex {
+				matchIndexStr = append(matchIndexStr, string(m))
+			}
+			matchIndexStrJoin := strings.Join(matchIndexStr, ",")
+			logStr := rf.log.getLogStr()
+			DPrintf("[%d] matchIndex: %s || log: %s", rf.me, matchIndexStrJoin, logStr)
+
+			os.Exit(1)
+		}
+	}()
+
 	for {
 		rf.mu.Lock()
 		if rf.role == Follower {
 			rf.mu.Unlock()
 			return
 		}
-
 		// 复制日志
-		for i := 0; i < len(rf.peers); i++ {
-			if i == rf.me {
-				continue
-			}
-			if rf.log.getLastLogEntryIndex() >= rf.nextIndex[i] {
-				go rf.sendAndSolveAppendEntries(i, false)
-			}
-		}
+		rf.doReplicateLogOrHearbeart(false)
 		rf.mu.Unlock()
 
-		// heartbeat
 		timer := time.NewTimer(HeartBeatInterval)
 		select {
 		case <-timer.C:
 			rf.mu.Lock()
-			for i := 0; i < len(rf.peers); i++ {
-				if i == rf.me {
-					continue
-				}
-				go rf.sendAndSolveAppendEntries(i, true)
-			}
+			// heartbeat
+			rf.doReplicateLogOrHearbeart(true)
 			rf.mu.Unlock()
 		}
 
 		// 更新commit
 		rf.mu.Lock()
+		// 快速结束。原因：即使日志被复制到大多数节点，也有可能被新的leader删除，如果不快速结束，可能会发生空指针错误
+		if rf.role != Leader {
+			rf.mu.Unlock()
+			return
+		}
 		match := getMajorityMatchIndex(rf.matchIndex)
 		if rf.log.getLogEntryByIndex(match).Term == rf.currentTerm && match > rf.commitIndex {
 			rf.commitIndex = match
@@ -646,7 +702,11 @@ func (rf *Raft) leaderFlow() {
 func (rf *Raft) run() {
 	go rf.doApplyMsg()
 	for {
-		switch rf.role {
+		rf.mu.Lock()
+		role := rf.role
+		rf.mu.Unlock()
+
+		switch role {
 		case Follower:
 			rf.followerFlow()
 		case Candidate:
@@ -688,4 +748,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.run()
 
 	return rf
+}
+
+func getEntriesStr(entries []*LogEntry) string {
+	entriesStr := []string{}
+	for _, entry := range entries {
+		entriesStr = append(entriesStr, fmt.Sprintf("%v", *entry))
+	}
+	return strings.Join(entriesStr, ",")
 }
