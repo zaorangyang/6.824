@@ -18,7 +18,9 @@ package raft
 //
 
 import (
+	"bytes"
 	"fmt"
+	"github.com/Drewryz/6.824/labgob"
 	"github.com/Drewryz/6.824/labrpc"
 	"math/rand"
 	"os"
@@ -58,7 +60,7 @@ type RaftRole int
 type RpcMsg int
 
 const (
-	raftLogCapacity      = 1048576
+	raftLogCapacity      = 1024
 	HeartBeatInterval    = 100 * time.Millisecond
 	ElectionTimeoutUpper = 800 * time.Millisecond
 	ElectionTimeoutLower = 500 * time.Millisecond
@@ -99,13 +101,50 @@ type Raft struct {
 	currentTerm uint64
 	// -1表示没有投票
 	votedFor    int
-	log         *raftLog
+	log         *RaftLog
 	commitIndex uint64
 	lastApplied uint64
 
 	// leader
 	nextIndex  []uint64
 	matchIndex []uint64
+}
+
+//
+// example RequestVote RPC arguments structure.
+// field names must start with capital letters!
+//
+type RequestVoteArgs struct {
+	// Your data here (2A, 2B).
+	CurrentTerm  uint64
+	CandidateId  int
+	LastLogIndex uint64
+	LastLogTerm  uint64
+}
+
+//
+// example RequestVote RPC reply structure.
+// field names must start with capital letters!
+//
+type RequestVoteReply struct {
+	// Your data here (2A).
+	Term        uint64
+	VoteGranted bool
+}
+
+type AppendEntriesArgs struct {
+	CurrentTerm  uint64
+	LeaderId     int
+	PrevLogIndex uint64
+	PrevLogTerm  uint64
+	Entries      []*LogEntry
+	LeaderCommit uint64
+}
+
+type AppendEntriesReply struct {
+	Term       uint64
+	Success    bool
+	FailReason int
 }
 
 // return currentTerm and whether this server
@@ -130,13 +169,23 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	err := e.Encode(rf.currentTerm)
+	if err != nil {
+		panic(err)
+	}
+	err = e.Encode(rf.votedFor)
+	if err != nil {
+		panic(err)
+	}
+	// TODO: log结构体的数据域不是全局可见，encode可能会出错
+	err = e.Encode(rf.log)
+	if err != nil {
+		panic(err)
+	}
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -144,21 +193,28 @@ func (rf *Raft) persist() {
 //
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
+		rf.currentTerm = 0
+		rf.votedFor = -1
+		rf.log = newRaftLog(raftLogCapacity)
 		return
 	}
+
 	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	err := d.Decode(&rf.currentTerm)
+	if err != nil {
+		panic(err)
+	}
+	err = d.Decode(&rf.votedFor)
+	if err != nil {
+		panic(err)
+	}
+	err = d.Decode(&rf.log)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func logUptodate(firstTerm uint64, firstIndex uint64, secondTerm uint64, secondIndex uint64) bool {
@@ -192,28 +248,6 @@ func getMajorityMatchIndex(matchIndex []uint64) uint64 {
 }
 
 //
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	CurrentTerm  uint64
-	CandidateId  int
-	LastLogIndex uint64
-	LastLogTerm  uint64
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        uint64
-	VoteGranted bool
-}
-
-//
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -233,18 +267,21 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else if rf.votedFor == -1 {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
+		rf.persist()
 	} else if args.CurrentTerm > rf.currentTerm {
 		// 每个server在同一时段只能投票一次，因此这里要判断args的term
 		lastLogEntry, lastLogIndex := rf.log.getLastLogEntry()
 		if logUptodate(args.LastLogTerm, args.LastLogIndex, lastLogEntry.Term, lastLogIndex) {
 			reply.VoteGranted = true
 			rf.votedFor = args.CandidateId
+			rf.persist()
 		}
 	}
 
 	// 更新当前节点的term
 	if args.CurrentTerm > rf.currentTerm {
 		rf.currentTerm = args.CurrentTerm
+		rf.persist()
 		if rf.role != Follower {
 			rf.role = Follower
 		}
@@ -321,6 +358,7 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 					rf.mu.Lock()
 					if reply.Term > rf.currentTerm {
 						rf.currentTerm = reply.Term
+						rf.persist()
 						rf.role = Follower
 					}
 					rf.mu.Unlock()
@@ -351,21 +389,6 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 	}
 }
 
-type AppendEntriesArgs struct {
-	CurrentTerm  uint64
-	LeaderId     int
-	PrevLogIndex uint64
-	PrevLogTerm  uint64
-	Entries      []*LogEntry
-	LeaderCommit uint64
-}
-
-type AppendEntriesReply struct {
-	Term       uint64
-	Success    bool
-	FailReason int
-}
-
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	reply.Success = false
 	rf.mu.Lock()
@@ -390,6 +413,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.CurrentTerm > rf.currentTerm {
 		rf.currentTerm = args.CurrentTerm
+		rf.persist()
 		if rf.role != Follower {
 			rf.role = Follower
 		}
@@ -413,6 +437,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if !rf.log.compareEntries(args.PrevLogIndex, args.Entries) {
 		rf.log.deleteEntriesByIndex(args.PrevLogIndex)
 		rf.log.appendEntries(args.Entries)
+		rf.persist()
 	}
 
 	// 此时，leader的日志与当前节点到args.PrevLogIndex+len(args.Entries)为止的日志一致
@@ -480,6 +505,7 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 		if reply.FailReason == TermOlder {
 			if reply.Term > rf.currentTerm {
 				rf.currentTerm = reply.Term
+				rf.persist()
 				rf.role = Follower
 			}
 			rf.mu.Unlock()
@@ -526,6 +552,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term:    uint64(term),
 		},
 	}))
+	rf.persist()
 	rf.nextIndex[rf.me]++
 	rf.matchIndex[rf.me] = rf.nextIndex[rf.me] - 1
 	return index, term, isLeader
@@ -593,6 +620,7 @@ func (rf *Raft) candidateFlow() {
 		rf.mu.Lock()
 		rf.currentTerm++
 		rf.votedFor = rf.me
+		rf.persist()
 		rf.mu.Unlock()
 		electionTimeout := getRandomDuration(rf.rand, ElectionTimeoutLower, ElectionTimeoutUpper)
 		timer := time.NewTimer(electionTimeout)
@@ -734,8 +762,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.votedFor = -1
-	rf.log = newRaftLog(raftLogCapacity)
 	rf.applyCh = applyCh
 	rf.commitAlterCh = make(chan struct{}, 1)
 	rf.receiveRpcCh = make(chan struct{}, 1)
