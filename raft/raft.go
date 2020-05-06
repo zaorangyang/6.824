@@ -73,6 +73,7 @@ const (
 	// appendrpc失败原因
 	TermOlder       = 1
 	LogUnconsistent = 2
+	OlderRequst     = 3
 )
 
 func getRandomDuration(rand *rand.Rand, lower time.Duration, upper time.Duration) time.Duration {
@@ -390,8 +391,10 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	reply.Success = false
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Success = false
 	reply.Term = rf.currentTerm
 
 	// TODO: 此处if逻辑混乱，需要更改
@@ -400,7 +403,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 当前节点term更新，返回false
 	if args.CurrentTerm < rf.currentTerm {
 		reply.FailReason = TermOlder
-		rf.mu.Unlock()
 		return
 	}
 	// 收到当前leader的append rpc请求，当前节点保持follower状态
@@ -424,21 +426,30 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	entry := rf.log.getLogEntryByIndex(args.PrevLogIndex)
-	rf.mu.Unlock()
 	// 日志不一致返回false
 	if entry == nil || entry.Term != args.PrevLogTerm {
 		reply.FailReason = LogUnconsistent
 		return
 	}
-	reply.Success = true
 
-	rf.mu.Lock()
-	// 如果要复制的日志与当前节点的日志不一致，复制
+	// TODO: 对于UnreliableAgree2C这个case，加上这一段代码会有问题
+	//if rf.commitIndex > args.PrevLogIndex {
+	//	reply.FailReason = OlderRequst
+	//	return
+	//}
+
+	// 如果要复制的日志与当前节点的日志不一致
 	if !rf.log.compareEntries(args.PrevLogIndex, args.Entries) {
+		// 旧的请求，直接return
+		if rf.commitIndex > args.PrevLogIndex {
+			reply.FailReason = OlderRequst
+			return
+		}
 		rf.log.deleteEntriesByIndex(args.PrevLogIndex)
 		rf.log.appendEntries(args.Entries)
 		rf.persist()
 	}
+	reply.Success = true
 
 	// 此时，leader的日志与当前节点到args.PrevLogIndex+len(args.Entries)为止的日志一致
 	if args.LeaderCommit > rf.commitIndex {
@@ -449,8 +460,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		default:
 		}
 	}
-
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -519,6 +528,11 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 				return
 			}
 		}
+
+		if reply.FailReason == OlderRequst {
+			return
+		}
+
 		rf.mu.Unlock()
 	}
 }

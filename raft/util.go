@@ -102,6 +102,7 @@ func (log *RaftLog) compareEntries(preLogIndex uint64, entries []*LogEntry) bool
 		if log.getLogEntryByIndex(curIndex).Term != entries[i].Term {
 			return false
 		}
+		curIndex++
 	}
 	return true
 }
