@@ -60,7 +60,7 @@ type RaftRole int
 type RpcMsg int
 
 const (
-	raftLogCapacity      = 1024
+	raftLogCapacity      = 1024 * 8
 	HeartBeatInterval    = 100 * time.Millisecond
 	ElectionTimeoutUpper = 800 * time.Millisecond
 	ElectionTimeoutLower = 500 * time.Millisecond
@@ -74,6 +74,10 @@ const (
 	TermOlder       = 1
 	LogUnconsistent = 2
 	OlderRequst     = 3
+
+	// raft节点状态
+	Running = 0
+	Stopped = 1
 )
 
 func getRandomDuration(rand *rand.Rand, lower time.Duration, upper time.Duration) time.Duration {
@@ -109,6 +113,8 @@ type Raft struct {
 	// leader
 	nextIndex  []uint64
 	matchIndex []uint64
+
+	nodeState int32
 }
 
 //
@@ -180,7 +186,6 @@ func (rf *Raft) persist() {
 	if err != nil {
 		panic(err)
 	}
-	// TODO: log结构体的数据域不是全局可见，encode可能会出错
 	err = e.Encode(rf.log)
 	if err != nil {
 		panic(err)
@@ -420,7 +425,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.role = Follower
 		}
 	}
-	// candidate节点发现了当前时段的leader转换为follower
+	// candidate节点发现了当前时段的leader, 转换为follower
 	if args.CurrentTerm == rf.currentTerm && rf.role == Candidate {
 		rf.role = Follower
 	}
@@ -432,15 +437,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	// TODO: 对于UnreliableAgree2C这个case，加上这一段代码会有问题
-	//if rf.commitIndex > args.PrevLogIndex {
-	//	reply.FailReason = OlderRequst
-	//	return
-	//}
-
 	// 如果要复制的日志与当前节点的日志不一致
 	if !rf.log.compareEntries(args.PrevLogIndex, args.Entries) {
-		// 旧的请求，直接return
 		if rf.commitIndex > args.PrevLogIndex {
 			reply.FailReason = OlderRequst
 			return
@@ -479,6 +477,11 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 	}()
 
 	for {
+		// TODO: 完善raft优雅退出机制. 测试组件下线一个raft节点时，只是将其从集群的网络中隔离，这导致被下线的节点重复创建用于heartbeat和
+		//  复制日志的协程，会导致TestFigure82C这个case，协程超限：race: limit on 8128 simultaneously alive goroutines is exceeded, dying
+		if atomic.LoadInt32(&rf.nodeState) == Stopped {
+			return
+		}
 		rf.mu.Lock()
 		// 当前leader可能已经转换为了follower，快速返回
 		if rf.role != Leader {
@@ -486,12 +489,11 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 			return
 		}
 		args.PrevLogIndex = rf.nextIndex[server] - 1
-		args.PrevLogTerm = rf.log.getLogEntryByIndex(rf.nextIndex[server] - 1).Term
+		args.PrevLogTerm = rf.log.getLogEntryByIndex(args.PrevLogIndex).Term
 		if !isHeartbeat {
 			args.Entries = rf.log.getLogEntryByRange(rf.nextIndex[server], rf.log.getLastLogEntryIndex()+1)
 		}
 		nextIndexBak := rf.nextIndex[server]
-		matchIndexBak := rf.matchIndex[server]
 		rf.mu.Unlock()
 		reply := &AppendEntriesReply{}
 		ok := rf.sendAppendEntries(server, args, reply)
@@ -504,7 +506,7 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 		if reply.Success {
 			// 由于遇到网络延迟，使返回的结果失去时效性，则不更改nextIndex和matchIndex
 			if atomic.CompareAndSwapUint64(&rf.nextIndex[server], nextIndexBak, nextIndexBak+uint64(len(args.Entries))) {
-				atomic.CompareAndSwapUint64(&rf.matchIndex[server], matchIndexBak, rf.nextIndex[server]-1)
+				rf.matchIndex[server] = rf.nextIndex[server] - 1
 			}
 			rf.mu.Unlock()
 			return
@@ -530,6 +532,7 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 		}
 
 		if reply.FailReason == OlderRequst {
+			rf.mu.Unlock()
 			return
 		}
 
@@ -580,6 +583,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+	atomic.StoreInt32(&rf.nodeState, Stopped)
 }
 
 func (rf *Raft) doApplyMsg() {
@@ -759,6 +763,11 @@ func (rf *Raft) run() {
 	}
 }
 
+func (rf *Raft) GetLogStr() string {
+	return fmt.Sprintf("%d, %s", rf.role, rf.log.getLogStr())
+
+}
+
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -785,6 +794,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	atomic.StoreInt32(&rf.nodeState, Running)
 	go rf.run()
 
 	return rf

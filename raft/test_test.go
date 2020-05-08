@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"github.com/magiconair/properties/assert"
 	"math/rand"
+	_ "net/http/pprof"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -648,6 +649,9 @@ func TestPersist32C(t *testing.T) {
 // haven't been committed yet.
 //
 func TestFigure82C(t *testing.T) {
+	//go func() {
+	//	http.ListenAndServe("0.0.0.0:6060", nil)
+	//}()
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -744,7 +748,8 @@ func TestFigure8Unreliable2C(t *testing.T) {
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
 		if iters == 200 {
-			cfg.setlongreordering(true)
+			// sometimes delay replies a long time
+			cfg.setlongreordering(false)
 		}
 		leader := -1
 		for i := 0; i < servers; i++ {
@@ -781,6 +786,9 @@ func TestFigure8Unreliable2C(t *testing.T) {
 			cfg.connect(i)
 		}
 	}
+	DPrintf("!!!!")
+	cfg.printRaftsLog()
+	//os.Exit(-1)
 
 	cfg.one(rand.Int()%10000, servers, true)
 

@@ -231,6 +231,14 @@ func (cfg *config) cleanup() {
 	cfg.checkTimeout()
 }
 
+func (cfg *config) printRaftsLog() {
+	for i := 0; i < len(cfg.rafts); i++ {
+		if cfg.rafts[i] != nil {
+			DPrintf(cfg.rafts[i].GetLogStr())
+		}
+	}
+}
+
 // attach server i to the net.
 func (cfg *config) connect(i int) {
 	// fmt.Printf("connect(%d)\n", i)
