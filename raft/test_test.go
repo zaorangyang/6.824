@@ -787,7 +787,9 @@ func TestFigure8Unreliable2C(t *testing.T) {
 		}
 	}
 	DPrintf("!!!!")
-	cfg.printRaftsLog()
+	time.Sleep(30 * time.Second)
+
+	//cfg.printRaftsLog()
 	//os.Exit(-1)
 
 	cfg.one(rand.Int()%10000, servers, true)

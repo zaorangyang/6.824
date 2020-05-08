@@ -346,6 +346,7 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 		}
 		wg.Add(1)
 		go func(server int) {
+			defer wg.Done()
 			rf.mu.Lock()
 			lastLog, lastLogIndex := rf.log.getLastLogEntry()
 			args := &RequestVoteArgs{
@@ -354,23 +355,33 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 				LastLogIndex: lastLogIndex,
 				LastLogTerm:  lastLog.Term,
 			}
+			originTerm := rf.currentTerm
 			rf.mu.Unlock()
+
 			reply := &RequestVoteReply{}
 			ok := rf.sendRequestVote(server, args, reply)
+
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			if originTerm != rf.currentTerm {
+				return
+			}
 			if ok {
-				if reply.VoteGranted {
-					voteCh <- struct{}{}
-				} else {
-					rf.mu.Lock()
+				if !reply.VoteGranted {
 					if reply.Term > rf.currentTerm {
 						rf.currentTerm = reply.Term
 						rf.persist()
 						rf.role = Follower
 					}
-					rf.mu.Unlock()
+				} else {
+					select {
+					case voteCh <- struct{}{}:
+					default:
+						DPrintf("can not be here!")
+						os.Exit(-1)
+					}
 				}
 			}
-			wg.Done()
 		}(i)
 	}
 
@@ -494,14 +505,20 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 			args.Entries = rf.log.getLogEntryByRange(rf.nextIndex[server], rf.log.getLastLogEntryIndex()+1)
 		}
 		nextIndexBak := rf.nextIndex[server]
-		rf.mu.Unlock()
 		reply := &AppendEntriesReply{}
+		originTerm := rf.currentTerm
+		rf.mu.Unlock()
+
 		ok := rf.sendAppendEntries(server, args, reply)
 		// rpc调用失败
 		if !ok {
 			return
 		}
 		rf.mu.Lock()
+		if originTerm != rf.currentTerm {
+			rf.mu.Unlock()
+			return
+		}
 		// 节点返回成功
 		if reply.Success {
 			// 由于遇到网络延迟，使返回的结果失去时效性，则不更改nextIndex和matchIndex
