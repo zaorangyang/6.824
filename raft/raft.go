@@ -149,9 +149,11 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term       uint64
-	Success    bool
-	FailReason int
+	Term          uint64
+	Success       bool
+	FailReason    int
+	ConflictTerm  uint64
+	ConflictIndex uint64
 }
 
 // return currentTerm and whether this server
@@ -445,6 +447,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 日志不一致返回false
 	if entry == nil || entry.Term != args.PrevLogTerm {
 		reply.FailReason = LogUnconsistent
+		if entry == nil {
+			reply.ConflictIndex = rf.log.getLastLogEntryIndex() + 1
+			reply.ConflictTerm = 0
+		} else {
+			reply.ConflictTerm = rf.log.getLogEntryByIndex(args.PrevLogIndex).Term
+			reply.ConflictIndex = rf.getTermFisrtlogIndex(reply.ConflictTerm, args.PrevLogIndex)
+		}
 		return
 	}
 
@@ -489,7 +498,7 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 
 	for {
 		// TODO: 完善raft优雅退出机制. 测试组件下线一个raft节点时，只是将其从集群的网络中隔离，这导致被下线的节点重复创建用于heartbeat和
-		//  复制日志的协程，会导致TestFigure82C这个case，协程超限：race: limit on 8128 simultaneously alive goroutines is exceeded, dying
+		//  复制日志的协程，从而导致TestFigure82C这个case协程超限：race: limit on 8128 simultaneously alive goroutines is exceeded, dying
 		if atomic.LoadInt32(&rf.nodeState) == Stopped {
 			return
 		}
@@ -541,8 +550,20 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 		}
 		// PreLogIndex位置的日志与leader不一致
 		if reply.FailReason == LogUnconsistent {
+			// 日志回溯优化
+			var newNextIndex uint64
+			if reply.ConflictTerm == 0 {
+				newNextIndex = reply.ConflictIndex
+			} else {
+				searchRes := rf.getTermLastlogIndex(reply.ConflictTerm, args.PrevLogIndex)
+				if searchRes == 0 {
+					newNextIndex = reply.ConflictIndex
+				} else {
+					newNextIndex = searchRes + 1
+				}
+			}
 			// nextIndex失去时效性，则直接退出
-			if !atomic.CompareAndSwapUint64(&rf.nextIndex[server], nextIndexBak, nextIndexBak-1) {
+			if !atomic.CompareAndSwapUint64(&rf.nextIndex[server], nextIndexBak, newNextIndex) {
 				rf.mu.Unlock()
 				return
 			}
@@ -601,6 +622,20 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
 	atomic.StoreInt32(&rf.nodeState, Stopped)
+}
+
+func (rf *Raft) getTermFisrtlogIndex(term uint64, guard uint64) uint64 {
+	for rf.log.getLogEntryByIndex(guard).Term == term {
+		guard--
+	}
+	return guard + 1
+}
+
+func (rf *Raft) getTermLastlogIndex(term uint64, guard uint64) uint64 {
+	for guard > 0 && rf.log.getLogEntryByIndex(guard).Term != term {
+		guard--
+	}
+	return guard
 }
 
 func (rf *Raft) doApplyMsg() {
