@@ -177,6 +177,7 @@ func (cfg *config) start1(i int) {
 						// some server has already committed a different value for this entry!
 						err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 							m.CommandIndex, i, m.Command, j, old)
+						cfg.printRaftsLog()
 					}
 				}
 				_, prevok := cfg.logs[i][m.CommandIndex-1]
@@ -470,6 +471,7 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 				time.Sleep(20 * time.Millisecond)
 			}
 			if retry == false {
+				cfg.printRaftsLog()
 				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 			}
 		} else {

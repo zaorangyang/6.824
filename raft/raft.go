@@ -264,39 +264,34 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
+
 	// 当前节点的term更大，返回false
 	if args.CurrentTerm < rf.currentTerm {
 		return
 	}
 
-	// 投票
-	if rf.votedFor == args.CandidateId {
-		reply.VoteGranted = true
-	} else if rf.votedFor == -1 {
-		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId
-		rf.persist()
-	} else if args.CurrentTerm > rf.currentTerm {
-		// 每个server在同一时段只能投票一次，因此这里要判断args的term
-		lastLogEntry, lastLogIndex := rf.log.getLastLogEntry()
-		if logUptodate(args.LastLogTerm, args.LastLogIndex, lastLogEntry.Term, lastLogIndex) {
-			reply.VoteGranted = true
-			rf.votedFor = args.CandidateId
-			rf.persist()
-		}
-	}
-
-	// 更新当前节点的term
+	// 遇到新term
 	if args.CurrentTerm > rf.currentTerm {
 		rf.currentTerm = args.CurrentTerm
+		rf.votedFor = -1
 		rf.persist()
 		if rf.role != Follower {
 			rf.role = Follower
 		}
 	}
 
+	// 投票。If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
+	lastLogEntry, lastLogIndex := rf.log.getLastLogEntry()
+	atLeastUptodate := logUptodate(args.LastLogTerm, args.LastLogIndex, lastLogEntry.Term, lastLogIndex)
+	voteGranted := (rf.votedFor == args.CandidateId || rf.votedFor == -1) && atLeastUptodate
+	if voteGranted {
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId
+		rf.persist()
+	}
+
 	// 当前节点投票给其他节点时，当前节点维持follower状态
-	if rf.role == Follower && reply.VoteGranted {
+	if voteGranted && rf.role == Follower && reply.VoteGranted {
 		select {
 		case rf.receiveRpcCh <- struct{}{}:
 		default:
@@ -372,6 +367,7 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 				if !reply.VoteGranted {
 					if reply.Term > rf.currentTerm {
 						rf.currentTerm = reply.Term
+						rf.votedFor = -1
 						rf.persist()
 						rf.role = Follower
 					}
@@ -433,6 +429,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.CurrentTerm > rf.currentTerm {
 		rf.currentTerm = args.CurrentTerm
+		rf.votedFor = -1
 		rf.persist()
 		if rf.role != Follower {
 			rf.role = Follower
@@ -542,6 +539,7 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 		if reply.FailReason == TermOlder {
 			if reply.Term > rf.currentTerm {
 				rf.currentTerm = reply.Term
+				rf.votedFor = -1
 				rf.persist()
 				rf.role = Follower
 			}
@@ -816,7 +814,7 @@ func (rf *Raft) run() {
 }
 
 func (rf *Raft) GetLogStr() string {
-	return fmt.Sprintf("%d, %s", rf.role, rf.log.getLogStr())
+	return fmt.Sprintf("%d, %d, %s", rf.role, rf.currentTerm, rf.log.getLogStr())
 
 }
 
