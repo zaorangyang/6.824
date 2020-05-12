@@ -292,6 +292,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// 当前节点投票给其他节点时，当前节点维持follower状态
 	if voteGranted && rf.role == Follower && reply.VoteGranted {
+		DPrintf("节点%d，RequestVote 保持follower状态", rf.me)
 		select {
 		case rf.receiveRpcCh <- struct{}{}:
 		default:
@@ -352,6 +353,7 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 				LastLogIndex: lastLogIndex,
 				LastLogTerm:  lastLog.Term,
 			}
+			DPrintf("节点%d，sendAndSolveRequestVote,  currentTerm = %d", rf.me, rf.currentTerm)
 			originTerm := rf.currentTerm
 			rf.mu.Unlock()
 
@@ -421,6 +423,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	// 收到当前leader的append rpc请求，当前节点保持follower状态
 	if rf.role == Follower {
+		DPrintf("节点%d，AppendEntries 保持follower状态", rf.me)
 		select {
 		case rf.receiveRpcCh <- struct{}{}:
 		default:
@@ -669,24 +672,41 @@ func (rf *Raft) followerFlow() {
 		// 1. 没有投票给其他节点
 		// 2. 没有收到当前leader的append rpc请求
 		// 会转换为candidate.
+		rf.mu.Lock()
+		originTerm := rf.currentTerm
+		rf.mu.Unlock()
 		electionTimeout := getRandomDuration(rf.rand, ElectionTimeoutLower, ElectionTimeoutUpper)
 		timer := time.NewTimer(electionTimeout)
 		select {
 		case <-timer.C:
 			rf.mu.Lock()
-			rf.role = Candidate
+			// 锁等待时，term没有被修改才能转换为candidate
+			if originTerm == rf.currentTerm {
+				rf.role = Candidate
+				rf.mu.Unlock()
+				return
+			}
 			rf.mu.Unlock()
-			return
 		case <-rf.receiveRpcCh:
 		}
 	}
 }
 
 func (rf *Raft) candidateFlow() {
+	count := 0
+	defer func() {
+		DPrintf("节点%d，经过%d轮选举", rf.me, count)
+	}()
 	for {
+		count++
 		getMajorityVotesCh := make(chan struct{}, 1)
 		rf.mu.Lock()
+		if rf.role == Follower {
+			rf.mu.Unlock()
+			return
+		}
 		rf.currentTerm++
+		DPrintf("节点%d，candidateFlow,  currentTerm = %d", rf.me, rf.currentTerm)
 		rf.votedFor = rf.me
 		rf.persist()
 		rf.mu.Unlock()
@@ -697,16 +717,14 @@ func (rf *Raft) candidateFlow() {
 		case <-timer.C:
 		case <-getMajorityVotesCh:
 			rf.mu.Lock()
+			if rf.role == Follower {
+				rf.mu.Unlock()
+				return
+			}
 			rf.role = Leader
 			rf.mu.Unlock()
 			return
 		}
-		rf.mu.Lock()
-		if rf.role == Follower {
-			rf.mu.Unlock()
-			return
-		}
-		rf.mu.Unlock()
 	}
 }
 
@@ -804,10 +822,13 @@ func (rf *Raft) run() {
 
 		switch role {
 		case Follower:
+			DPrintf("节点%d, become Follower", rf.me)
 			rf.followerFlow()
 		case Candidate:
+			DPrintf("节点%d, become Candidate", rf.me)
 			rf.candidateFlow()
 		case Leader:
+			DPrintf("节点%d, become Leader", rf.me)
 			rf.leaderFlow()
 		}
 	}
