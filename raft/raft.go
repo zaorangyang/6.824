@@ -407,8 +407,10 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	DPrintf("节点%d接收到节点%d, AppendEntries before lock", rf.me, args.LeaderId)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	DPrintf("节点%d接收到节点%d, AppendEntries", rf.me, args.LeaderId)
 
 	reply.Success = false
 	reply.Term = rf.currentTerm
@@ -481,7 +483,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	DPrintf("节点%d向节点%d, sendAppendEntries", rf.me, server)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	if ok {
+		DPrintf("节点%d向节点%d, sendAppendEntries, 成功", rf.me, server)
+	} else {
+		DPrintf("节点%d向节点%d, sendAppendEntries, 失败", rf.me, server)
+	}
 	return ok
 }
 
@@ -672,21 +680,14 @@ func (rf *Raft) followerFlow() {
 		// 1. 没有投票给其他节点
 		// 2. 没有收到当前leader的append rpc请求
 		// 会转换为candidate.
-		rf.mu.Lock()
-		originTerm := rf.currentTerm
-		rf.mu.Unlock()
 		electionTimeout := getRandomDuration(rf.rand, ElectionTimeoutLower, ElectionTimeoutUpper)
 		timer := time.NewTimer(electionTimeout)
 		select {
 		case <-timer.C:
 			rf.mu.Lock()
-			// 锁等待时，term没有被修改才能转换为candidate
-			if originTerm == rf.currentTerm {
-				rf.role = Candidate
-				rf.mu.Unlock()
-				return
-			}
+			rf.role = Candidate
 			rf.mu.Unlock()
+			return
 		case <-rf.receiveRpcCh:
 		}
 	}
@@ -776,11 +777,13 @@ func (rf *Raft) leaderFlow() {
 	}()
 
 	for {
+		DPrintf("节点%d, leader main flow start", rf.me)
 		rf.mu.Lock()
 		if rf.role == Follower {
 			rf.mu.Unlock()
 			return
 		}
+		DPrintf("节点%d, leader main flow will send AppendEntries", rf.me)
 		// 复制日志
 		rf.doReplicateLogOrHearbeart(false)
 		rf.mu.Unlock()
