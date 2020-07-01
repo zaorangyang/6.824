@@ -44,16 +44,7 @@ type KVServer struct {
 func (kv *KVServer) opHelper(op *Op) GetReply {
 	// tricy here: 用GetReply作为通用的reply
 	reply := GetReply{}
-	clerkID := op.ClerkID
-	opID := op.OpID
 	kv.mu.Lock()
-	bolt, ok := kv.clerkBolts[clerkID]
-	if ok && opID < bolt {
-		// TODO: 某些情况下，客户端是否会一直重试?
-		reply.Err = "already executed"
-		kv.mu.Unlock()
-		return reply
-	}
 	opIndex, term, isLeader := kv.rf.Start(*op)
 	if !isLeader {
 		reply.WrongLeader = true
@@ -121,12 +112,36 @@ func (kv *KVServer) Kill() {
 	// Your code here, if desired.
 }
 
+func (kv *KVServer) doCommand(op Op) string {
+	var value string
+	var ok bool
+	switch op.Op {
+	case "Get":
+		value, ok = kv.data[op.Key]
+		if !ok {
+			DPrintf("[server] dnot have key: %v", op.Key)
+			value = ""
+		}
+
+	case "Put":
+		kv.data[op.Key] = op.Value
+	case "Append":
+		value, ok := kv.data[op.Key]
+		if !ok {
+			kv.data[op.Key] = op.Value
+		} else {
+			kv.data[op.Key] = value + op.Value
+		}
+	}
+	return value
+}
+
 func (kv *KVServer) apply() {
 	for {
 		select {
 		case msg := <-kv.applyCh:
 			if !msg.CommandValid {
-				DPrintf("server apply command invalid")
+				DPrintf("[server] apply command invalid")
 				continue
 			}
 			op, ok := msg.Command.(Op)
@@ -136,27 +151,23 @@ func (kv *KVServer) apply() {
 			}
 
 			kv.mu.Lock()
-			kv.clerkBolts[op.ClerkID] = op.OpID + 1
-			var value string
-			switch op.Op {
-			case "Get":
-				value, ok = kv.data[op.Key]
-				if !ok {
-					DPrintf("[server] dnot have key: %v", op.Key)
-					value = ""
-				}
-
-			case "Put":
-				kv.data[op.Key] = op.Value
-			case "Append":
-				value, ok := kv.data[op.Key]
-				if !ok {
-					kv.data[op.Key] = op.Value
-				} else {
-					kv.data[op.Key] = value + op.Value
-				}
-			}
 			finishChan, chanExist := kv.finishChans[msg.CommandIndex]
+			var value string
+			// 对于已经执行过的操作：
+			// 1. bolt值不再变化
+			// 2. 如果是Get方法且当前节点是leader，则返回数据
+			// 3. 如果是Put/Append方法，则不执行
+			bolts, ok := kv.clerkBolts[op.ClerkID]
+			if ok && op.OpID < bolts {
+				DPrintf("[server] get old op: %v", op)
+				if op.Op == "Get" {
+					value = kv.doCommand(op)
+				}
+			} else {
+				value = kv.doCommand(op)
+				kv.clerkBolts[op.ClerkID] = op.OpID + 1
+			}
+
 			term, termExist := kv.reqTerm[msg.CommandIndex]
 			if chanExist && termExist && term == int(msg.Term) {
 				finishChan <- value
