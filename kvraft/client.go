@@ -1,13 +1,21 @@
 package raftkv
 
-import "github.com/Drewryz/6.824/labrpc"
+import (
+	"github.com/Drewryz/6.824/labrpc"
+	"time"
+)
 import "crypto/rand"
 import "math/big"
 
-
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
+	servers  []*labrpc.ClientEnd
+	clerkID  int64
+	opID     int64
+	leaderID int64
+}
+
+func getClerkID() int64 {
+	return time.Now().UnixNano()
 }
 
 func nrand() int64 {
@@ -17,12 +25,19 @@ func nrand() int64 {
 	return x
 }
 
+func (ck *Clerk) getMasterIDRandomly() int64 {
+	return nrand() % int64(len(ck.servers))
+}
+
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	// You'll have to add code here.
+	ck.clerkID = getClerkID()
+	ck.leaderID = ck.getMasterIDRandomly()
 	return ck
 }
+
+/* Get/Put/Append假设一个Clerk同一时刻只有一个操作在进行 */
 
 //
 // fetch the current value for a key.
@@ -37,9 +52,35 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
+	args := GetArgs{
+		Key:     key,
+		ClerkID: ck.clerkID,
+		OpID:    ck.opID,
+	}
+	defer func() {
+		ck.opID++
+	}()
+	op := "Get"
+	for {
+		reply := GetReply{}
+		leaderID := ck.leaderID
+		ok := ck.servers[leaderID].Call("KVServer.Get", &args, &reply)
+		if !ok {
+			DPrintf("%s rpc call error, leaderID=%v, clearkID=%v, opID= %v", op, leaderID, args.ClerkID, args.OpID)
+			continue
+		}
+		if !reply.WrongLeader && len(reply.Err) == 0 {
+			return reply.Value
+		}
+		if reply.WrongLeader {
+			DPrintf("%s wrong leader, leaderID=%v, clearkID=%v, opID= %v", op, leaderID, args.ClerkID, args.OpID)
+			newMasterID := ck.getMasterIDRandomly()
+			ck.leaderID = newMasterID
+		} else {
+			DPrintf("%s error: %s, leaderID=%v, clearkID=%v, opID= %v", op, reply.Err, leaderID, args.ClerkID, args.OpID)
+		}
+	}
 
-	// You will have to modify this function.
-	return ""
 }
 
 //
@@ -54,6 +95,36 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	args := PutAppendArgs{
+		Key:     key,
+		Value:   value,
+		ClerkID: ck.clerkID,
+		OpID:    ck.opID,
+		Op:      op,
+	}
+	defer func() {
+		ck.opID++
+	}()
+
+	for {
+		reply := PutAppendReply{}
+		leaderID := ck.leaderID
+		ok := ck.servers[leaderID].Call("KVServer.PutAppend", &args, &reply)
+		if !ok {
+			DPrintf("%s rpc call error, leaderID=%v, clearkID=%v, opID= %v", op, leaderID, args.ClerkID, args.OpID)
+			continue
+		}
+		if !reply.WrongLeader && len(reply.Err) == 0 {
+			return
+		}
+		if reply.WrongLeader {
+			DPrintf("%s wrong leader, leaderID=%v, clearkID=%v, opID= %v", op, leaderID, args.ClerkID, args.OpID)
+			newMasterID := ck.getMasterIDRandomly()
+			ck.leaderID = newMasterID
+		} else {
+			DPrintf("%s error: %s, leaderID=%v, clearkID=%v, opID= %v", op, reply.Err, leaderID, args.ClerkID, args.OpID)
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

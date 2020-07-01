@@ -3,9 +3,11 @@ package raftkv
 import (
 	"github.com/Drewryz/6.824/labgob"
 	"github.com/Drewryz/6.824/labrpc"
-	"log"
 	"github.com/Drewryz/6.824/raft"
+	"log"
+	"os"
 	"sync"
+	"time"
 )
 
 const Debug = 0
@@ -17,31 +19,95 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const opTimeOut = 2 * time.Second
 
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	ClerkID int64
+	OpID    int64
+	Op      string
+	Key     string
+	Value   string
 }
 
 type KVServer struct {
-	mu      sync.Mutex
-	me      int
-	rf      *raft.Raft
-	applyCh chan raft.ApplyMsg
-
+	mu           sync.Mutex
+	me           int
+	rf           *raft.Raft
+	applyCh      chan raft.ApplyMsg
+	finishChans  map[int]chan string
+	reqTerm      map[int]int // 记录接收每个请求时的term
+	data         map[string]string
+	clerkBolts   map[int64]int64
 	maxraftstate int // snapshot if log grows this big
-
-	// Your definitions here.
 }
 
+func (kv *KVServer) opHelper(op *Op) GetReply {
+	// tricy here: 用GetReply作为通用的reply
+	reply := GetReply{}
+	clerkID := op.ClerkID
+	opID := op.OpID
+	kv.mu.Lock()
+	bolt, ok := kv.clerkBolts[clerkID]
+	if ok && opID < bolt {
+		// TODO: 某些情况下，客户端是否会一直重试?
+		reply.Err = "already executed"
+		kv.mu.Unlock()
+		return reply
+	}
+	opIndex, term, isLeader := kv.rf.Start(*op)
+	if !isLeader {
+		reply.WrongLeader = true
+		kv.mu.Unlock()
+		return reply
+	}
+	finishChan := make(chan string, 1)
+	kv.finishChans[opIndex] = finishChan
+	kv.reqTerm[opIndex] = term
+	kv.mu.Unlock()
+
+	var value string
+	timer := time.NewTimer(opTimeOut)
+	select {
+	case <-timer.C:
+		reply.Err = "timeout"
+	case value = <-finishChan:
+	}
+
+	kv.mu.Lock()
+	delete(kv.finishChans, opIndex)
+	delete(kv.reqTerm, opIndex)
+	kv.mu.Unlock()
+
+	if op.Op == "Get" {
+		reply.Value = value
+	}
+	return reply
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	op := Op{
+		ClerkID: args.ClerkID,
+		OpID:    args.OpID,
+		Key:     args.Key,
+		Op:      "Get",
+	}
+	ret := kv.opHelper(&op)
+	reply.WrongLeader = ret.WrongLeader
+	reply.Value = ret.Value
+	reply.Err = ret.Err
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	op := Op{
+		ClerkID: args.ClerkID,
+		OpID:    args.OpID,
+		Key:     args.Key,
+		Op:      args.Op,
+		Value:   args.Value,
+	}
+	ret := kv.opHelper(&op)
+	reply.WrongLeader = ret.WrongLeader
+	reply.Err = ret.Err
 }
 
 //
@@ -53,6 +119,53 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+}
+
+func (kv *KVServer) apply() {
+	for {
+		select {
+		case msg := <-kv.applyCh:
+			if !msg.CommandValid {
+				DPrintf("server apply command invalid")
+				continue
+			}
+			op, ok := msg.Command.(Op)
+			if !ok {
+				DPrintf("server get unrecognized msg format")
+				os.Exit(1)
+			}
+
+			kv.mu.Lock()
+			kv.clerkBolts[op.ClerkID] = op.OpID + 1
+			var value string
+			switch op.Op {
+			case "Get":
+				value, ok = kv.data[op.Key]
+				if !ok {
+					DPrintf("[server] dnot have key: %v", op.Key)
+					value = ""
+				}
+
+			case "Put":
+				kv.data[op.Key] = op.Value
+			case "Append":
+				value, ok := kv.data[op.Key]
+				if !ok {
+					kv.data[op.Key] = op.Value
+				} else {
+					kv.data[op.Key] = value + op.Value
+				}
+			}
+			finishChan, chanExist := kv.finishChans[msg.CommandIndex]
+			term, termExist := kv.reqTerm[msg.CommandIndex]
+			if chanExist && termExist && term == int(msg.Term) {
+				finishChan <- value
+			}
+			kv.mu.Unlock()
+
+		}
+	}
+
 }
 
 //
@@ -73,17 +186,15 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
-
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
-
-	// You may need initialization code here.
-
 	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.finishChans = make(map[int]chan string)
+	kv.reqTerm = make(map[int]int)
+	kv.data = make(map[string]string)
+	kv.clerkBolts = make(map[int64]int64)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
-	// You may need initialization code here.
-
+	go kv.apply()
 	return kv
 }

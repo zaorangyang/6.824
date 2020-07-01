@@ -49,6 +49,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	Term         uint64
 }
 
 type LogEntry struct {
@@ -661,9 +662,9 @@ func (rf *Raft) doApplyMsg() {
 					CommandValid: true,
 					Command:      rf.log.getLogEntryByIndex(rf.lastApplied + 1).Command,
 					CommandIndex: int(rf.lastApplied + 1),
+					Term:         rf.log.getLogEntryByIndex(rf.lastApplied + 1).Term,
 				}
 				rf.mu.Unlock()
-
 				rf.applyCh <- applyMsg
 
 				rf.mu.Lock()

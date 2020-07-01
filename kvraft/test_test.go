@@ -1,6 +1,8 @@
 package raftkv
 
-import "github.com/Drewryz/6.824/linearizability"
+import (
+	"github.com/Drewryz/6.824/linearizability"
+)
 
 import "testing"
 import "strconv"
@@ -10,6 +12,7 @@ import "log"
 import "strings"
 import "sync"
 import "sync/atomic"
+import _ "net/http/pprof"
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -189,7 +192,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		clnts[i] = make(chan int)
 	}
 	for i := 0; i < 3; i++ {
-		// log.Printf("Iteration %v\n", i)
+		log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
 		go spawn_clients_and_wait(t, cfg, nclients, func(cli int, myck *Clerk, t *testing.T) {
@@ -200,6 +203,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			last := ""
 			key := strconv.Itoa(cli)
 			Put(cfg, myck, key, last)
+
 			for atomic.LoadInt32(&done_clients) == 0 {
 				if (rand.Int() % 1000) < 500 {
 					nv := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
@@ -425,6 +429,9 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 
 func TestBasic3A(t *testing.T) {
 	// Test: one client (3A) ...
+	//go func() {
+	//	http.ListenAndServe(":9999", nil)
+	//}()
 	GenericTest(t, "3A", 1, false, false, false, -1)
 }
 
