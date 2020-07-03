@@ -112,6 +112,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ok := ck.servers[leaderID].Call("KVServer.PutAppend", &args, &reply)
 		if !ok {
 			DPrintf("%s rpc call error, leaderID=%v, clearkID=%v, opID= %v", op, leaderID, args.ClerkID, args.OpID)
+			newMasterID := ck.getMasterIDRandomly()
+			ck.leaderID = newMasterID
 			continue
 		}
 		if !reply.WrongLeader && len(reply.Err) == 0 {
@@ -122,6 +124,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			newMasterID := ck.getMasterIDRandomly()
 			ck.leaderID = newMasterID
 		} else {
+			// 如果超时会**重复**向同一个节点请求
 			DPrintf("%s error: %s, leaderID=%v, clearkID=%v, opID= %v", op, reply.Err, leaderID, args.ClerkID, args.OpID)
 		}
 	}

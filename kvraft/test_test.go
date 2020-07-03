@@ -481,6 +481,9 @@ func TestUnreliableOneKey3A(t *testing.T) {
 // doesn't go through until the partition heals.  The leader in the original
 // network ends up in the minority partition.
 func TestOnePartition3A(t *testing.T) {
+	//go func() {
+	//	http.ListenAndServe(":9999", nil)
+	//}()
 	const nservers = 5
 	cfg := make_config(t, nservers, false, -1)
 	defer cfg.cleanup()
@@ -496,7 +499,6 @@ func TestOnePartition3A(t *testing.T) {
 	ckp1 := cfg.makeClient(p1)  // connect ckp1 to p1
 	ckp2a := cfg.makeClient(p2) // connect ckp2a to p2
 	ckp2b := cfg.makeClient(p2) // connect ckp2b to p2
-
 	Put(cfg, ckp1, "1", "14")
 	check(cfg, t, ckp1, "1", "14")
 
