@@ -30,14 +30,16 @@ type Op struct {
 }
 
 type KVServer struct {
-	mu           sync.Mutex
-	me           int
-	rf           *raft.Raft
-	applyCh      chan raft.ApplyMsg
-	finishChans  map[int]chan string
-	reqTerm      map[int]int // 记录接收每个请求时的term
-	data         map[string]string
+	mu          sync.Mutex
+	me          int
+	rf          *raft.Raft
+	applyCh     chan raft.ApplyMsg
+	finishChans map[int]chan string
+	reqTerm     map[int]int // 记录接收每个请求时的term
+	data        map[string]string
+	// TODO: 客户端门限没有做过期处理
 	clerkBolts   map[int64]int64
+	persister    *raft.Persister
 	maxraftstate int // snapshot if log grows this big
 }
 
@@ -157,8 +159,8 @@ func (kv *KVServer) apply() {
 			// 1. bolt值不再变化
 			// 2. 如果是Get方法且当前节点是leader，则返回数据
 			// 3. 如果是Put/Append方法，则不执行
-			bolts, ok := kv.clerkBolts[op.ClerkID]
-			if ok && op.OpID < bolts {
+			bolt, ok := kv.clerkBolts[op.ClerkID]
+			if ok && op.OpID < bolt {
 				DPrintf("[server] get old op: %v", op)
 				if op.Op == "Get" {
 					value = kv.doCommand(op)
@@ -172,11 +174,24 @@ func (kv *KVServer) apply() {
 			if chanExist && termExist && term == int(msg.Term) {
 				finishChan <- value
 			}
+			kv.makeSnapshot(msg.Term, uint64(msg.CommandIndex))
 			kv.mu.Unlock()
-
 		}
 	}
 
+}
+
+func (kv *KVServer) makeSnapshot(lastTerm uint64, lastIndex uint64) {
+	if kv.persister.RaftStateSize() <= kv.maxraftstate {
+		return
+	}
+	snapshot := raft.Snapshot{
+		LastIndex:  lastIndex,
+		LastTerm:   lastTerm,
+		State:      kv.data,
+		ClerkBolts: kv.clerkBolts,
+	}
+	kv.rf.MakeSnapshot(&snapshot)
 }
 
 //
@@ -205,6 +220,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.reqTerm = make(map[int]int)
 	kv.data = make(map[string]string)
 	kv.clerkBolts = make(map[int64]int64)
+	kv.persister = persister
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	go kv.apply()
 	return kv

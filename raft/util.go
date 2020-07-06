@@ -26,24 +26,27 @@ func Min(arg1 uint64, arg2 uint64) uint64 {
 	return arg2
 }
 
+const raftLogCapacity = 1024 * 8
+
 type RaftLog struct {
-	Capacity uint64
-	Used     uint64
+	Used uint64
 	// 表示下一个要入队的位置，最后一条日志的位置应该为in-1
-	In  uint64
-	Out uint64
-	Log []*LogEntry
+	In   uint64
+	Out  uint64
+	Log  []*LogEntry
+	Base uint64
 }
 
 var noLogErr = errors.New("no log")
 
-func newRaftLog(capacity uint64) *RaftLog {
+// TODO: RaftLog的指针并未考虑到溢出情况
+func newRaftLog() *RaftLog {
 	log := &RaftLog{
-		Capacity: capacity,
-		Used:     1,
-		In:       1,
-		Out:      0,
-		Log:      make([]*LogEntry, capacity),
+		Used: 1,
+		In:   1,
+		Out:  0,
+		Log:  make([]*LogEntry, raftLogCapacity),
+		Base: 0,
 	}
 
 	// 此处全部初始化的原因是因为persist的时候数组的元素不能有nil
@@ -55,6 +58,12 @@ func newRaftLog(capacity uint64) *RaftLog {
 	return log
 }
 
+// 删除(,guard]所有的日志
+func (log *RaftLog) discardOldLog(guard uint64) {
+	log.Log = append(log.Log[:log.Base], log.Log[guard-log.Base+1:]...)
+	log.Base = guard + 1
+}
+
 func (log *RaftLog) getLastLogEntryIndex() uint64 {
 	return log.In - 1
 }
@@ -63,12 +72,12 @@ func (log *RaftLog) getLastLogEntry() (*LogEntry, uint64) {
 	if log.Used == 0 {
 		return nil, 0
 	}
-	return log.Log[(log.In-1)%log.Capacity], log.In - 1
+	return log.Log[log.In-log.Base-1], log.In - 1
 }
 
 func (log *RaftLog) getLogEntryByIndex(index uint64) *LogEntry {
 	if index >= log.Out && index < log.In {
-		return log.Log[index%log.Capacity]
+		return log.Log[index-log.Base]
 	}
 	return nil
 }
@@ -80,7 +89,7 @@ func (log *RaftLog) getLogEntryByRange(from uint64, to uint64) []*LogEntry {
 		return nil
 	}
 	for i := from; i < to; i++ {
-		entries = append(entries, log.Log[i])
+		entries = append(entries, log.Log[i-log.Base])
 	}
 	return entries
 }
@@ -111,7 +120,7 @@ func (log *RaftLog) compareEntries(preLogIndex uint64, entries []*LogEntry) bool
 func (log *RaftLog) appendEntries(entries []*LogEntry) uint64 {
 	startIndex := log.In
 	for _, entry := range entries {
-		log.Log[log.In] = entry
+		log.Log[log.In-log.Base] = entry
 		log.In++
 	}
 	log.Used += uint64(len(entries))
@@ -122,7 +131,7 @@ func (log *RaftLog) appendEntries(entries []*LogEntry) uint64 {
 func (log *RaftLog) getLogStr() string {
 	logStr := []string{}
 	for i := log.Out; i < log.In; i++ {
-		logStr = append(logStr, fmt.Sprintf("(%d:%d)", i, log.Log[i%log.Capacity]))
+		logStr = append(logStr, fmt.Sprintf("(%d:%d)", i, log.Log[i-log.Base]))
 	}
 	return strings.Join(logStr, ",")
 }

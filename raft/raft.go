@@ -57,11 +57,18 @@ type LogEntry struct {
 	Term    uint64
 }
 
+type Snapshot struct {
+	LastIndex uint64
+	LastTerm  uint64
+	State     map[string]string
+	// TODO: raft作为一个通用库，不应该对server的业务逻辑有知晓
+	ClerkBolts map[int64]int64
+}
+
 type RaftRole int
 type RpcMsg int
 
 const (
-	raftLogCapacity      = 1024 * 8
 	HeartBeatInterval    = 100 * time.Millisecond
 	ElectionTimeoutUpper = 800 * time.Millisecond
 	ElectionTimeoutLower = 500 * time.Millisecond
@@ -123,7 +130,6 @@ type Raft struct {
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
 	CurrentTerm  uint64
 	CandidateId  int
 	LastLogIndex uint64
@@ -162,7 +168,6 @@ type AppendEntriesReply struct {
 func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isLeader bool
-	// Your code here (2A).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	term = int(rf.currentTerm)
@@ -172,13 +177,7 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isLeader
 }
 
-//
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-//
-func (rf *Raft) persist() {
-	// Your code here (2C).
+func (rf *Raft) getRaftPersistentState() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	err := e.Encode(rf.currentTerm)
@@ -193,7 +192,16 @@ func (rf *Raft) persist() {
 	if err != nil {
 		panic(err)
 	}
-	data := w.Bytes()
+	return w.Bytes()
+}
+
+//
+// save Raft's persistent state to stable storage,
+// where it can later be retrieved after a crash and restart.
+// see paper's Figure 2 for a description of what should be persistent.
+//
+func (rf *Raft) persist() {
+	data := rf.getRaftPersistentState()
 	rf.persister.SaveRaftState(data)
 }
 
@@ -204,7 +212,7 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		rf.currentTerm = 0
 		rf.votedFor = -1
-		rf.log = newRaftLog(raftLogCapacity)
+		rf.log = newRaftLog()
 		return
 	}
 
@@ -843,17 +851,24 @@ func (rf *Raft) GetLogStr() string {
 
 }
 
-//
-// the service or tester wants to create a Raft server. the ports
-// of all the Raft servers (including this one) are in peers[]. this
-// server's port is peers[me]. all the servers' peers[] arrays
-// have the same order. persister is a place for this server to
-// save its persistent state, and also initially holds the most
-// recent saved state, if any. applyCh is a channel on which the
-// tester or service expects Raft to send ApplyMsg messages.
-// Make() must return quickly, so it should start goroutines
-// for any long-running work.
-//
+func (rf *Raft) MakeSnapshot(snapshot *Snapshot) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	rf.log.discardOldLog(snapshot.LastIndex)
+	raftData := rf.getRaftPersistentState()
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	err := e.Encode(snapshot)
+	if err != nil {
+		panic(err)
+	}
+	snapshotData := w.Bytes()
+
+	rf.persister.SaveStateAndSnapshot(raftData, snapshotData)
+}
+
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
