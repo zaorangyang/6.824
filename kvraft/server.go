@@ -143,9 +143,17 @@ func (kv *KVServer) apply() {
 		select {
 		case msg := <-kv.applyCh:
 			if !msg.CommandValid {
-				DPrintf("[server] apply command invalid")
+				DPrintf("[server] apply snapshot ")
+				snapshot, ok := msg.Command.(raft.Snapshot)
+				if !ok {
+					DPrintf("server get unrecognized snapshot format")
+					os.Exit(1)
+				}
+				kv.clerkBolts = snapshot.ClerkBolts
+				kv.data = snapshot.State
 				continue
 			}
+
 			op, ok := msg.Command.(Op)
 			if !ok {
 				DPrintf("server get unrecognized msg format")
@@ -153,7 +161,6 @@ func (kv *KVServer) apply() {
 			}
 
 			kv.mu.Lock()
-			finishChan, chanExist := kv.finishChans[msg.CommandIndex]
 			var value string
 			// 对于已经执行过的操作：
 			// 1. bolt值不再变化
@@ -169,7 +176,7 @@ func (kv *KVServer) apply() {
 				value = kv.doCommand(op)
 				kv.clerkBolts[op.ClerkID] = op.OpID + 1
 			}
-
+			finishChan, chanExist := kv.finishChans[msg.CommandIndex]
 			term, termExist := kv.reqTerm[msg.CommandIndex]
 			if chanExist && termExist && term == int(msg.Term) {
 				finishChan <- value
@@ -178,7 +185,6 @@ func (kv *KVServer) apply() {
 			kv.mu.Unlock()
 		}
 	}
-
 }
 
 func (kv *KVServer) makeSnapshot(lastTerm uint64, lastIndex uint64) {

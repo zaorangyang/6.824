@@ -31,25 +31,12 @@ import (
 	"time"
 )
 
-// import "bytes"
-// import "labgob"
-
-//
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in Lab 3 you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh; at that point you can add fields to
-// ApplyMsg, but set CommandValid to false for these other uses.
-//
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
 	Term         uint64
+	Snapshot     Snapshot
 }
 
 type LogEntry struct {
@@ -107,9 +94,6 @@ type Raft struct {
 	receiveRpcCh chan struct{}
 	rand         *rand.Rand
 
-	// Your data here (2A, 2B, 2C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
 	role        RaftRole
 	currentTerm uint64
 	// -1表示没有投票
@@ -161,6 +145,16 @@ type AppendEntriesReply struct {
 	FailReason    int
 	ConflictTerm  uint64
 	ConflictIndex uint64
+}
+
+type SnapshotArgs struct {
+	CurrentTerm uint64
+	LeaderId    int
+	Snapshot    Snapshot
+}
+
+type SnapshotReply struct {
+	Term uint64
 }
 
 // return currentTerm and whether this server
@@ -232,6 +226,22 @@ func (rf *Raft) readPersist(data []byte) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func (rf *Raft) readSnapShot() (Snapshot, bool) {
+	data := rf.persister.ReadSnapshot()
+	if data == nil || len(data) < 1 {
+		return Snapshot{}, false
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var snapshot Snapshot
+	err := d.Decode(&snapshot)
+	if err != nil {
+		panic(err)
+	}
+	return snapshot, true
 }
 
 func logUptodate(firstTerm uint64, firstIndex uint64, secondTerm uint64, secondIndex uint64) bool {
@@ -310,35 +320,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	return
 }
 
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-//
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
@@ -413,6 +394,54 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 			}
 		}
 	}
+}
+
+func (rf *Raft) InstallSnapshot(args *SnapshotArgs, reply *SnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+	if args.CurrentTerm < rf.currentTerm {
+		return
+	}
+
+	// 遇到新term
+	if args.CurrentTerm > rf.currentTerm {
+		rf.currentTerm = args.CurrentTerm
+		rf.votedFor = -1
+		rf.persist()
+		if rf.role != Follower {
+			rf.role = Follower
+		}
+	}
+
+	curSnapshot, ok := rf.readSnapShot()
+	if ok && curSnapshot.LastIndex >= args.Snapshot.LastIndex {
+		DPrintf("InstallSnapshot receive old snapshot")
+		return
+	}
+
+	rf.makeSnapshotWithoutLock(&args.Snapshot)
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *SnapshotArgs, reply *SnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
+}
+
+func (rf *Raft) makeInstallSnapshotArgs() SnapshotArgs {
+	snapshot, ok := rf.readSnapShot()
+	if !ok {
+		DPrintf("invalid snapshot in leader calling InstallSnapshot")
+		os.Exit(3)
+	}
+
+	args := SnapshotArgs{
+		CurrentTerm: rf.currentTerm,
+		LeaderId:    rf.me,
+		Snapshot:    snapshot,
+	}
+	return args
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -502,6 +531,24 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+func (rf *Raft) solveInstallSnapshot(server int, snapshot *Snapshot, reply *SnapshotReply, originTerm uint64, nextIndexBak uint64) {
+	if originTerm != rf.currentTerm {
+		return
+	}
+
+	if reply.Term > rf.currentTerm {
+		rf.currentTerm = reply.Term
+		rf.votedFor = -1
+		rf.persist()
+		rf.role = Follower
+		return
+	}
+
+	if atomic.CompareAndSwapUint64(&rf.nextIndex[server], nextIndexBak, snapshot.LastIndex+1) {
+		rf.matchIndex[server] = rf.nextIndex[server] - 1
+	}
+}
+
 // TODO: 转换成follower应该如何优雅地做
 func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, isHeartbeat bool) {
 	defer func() {
@@ -526,16 +573,38 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 			return
 		}
 		args.PrevLogIndex = rf.nextIndex[server] - 1
-		args.PrevLogTerm = rf.log.getLogEntryByIndex(args.PrevLogIndex).Term
+		nextIndexBak := rf.nextIndex[server]
+		originTerm := rf.currentTerm
+
+		// TODO: snapshot的几个状态应该缓冲起来，不然实际生产环境中持续读快照会浪费太多的IO资源
+		snapshot, ok := rf.readSnapShot()
+		if ok {
+			if args.PrevLogIndex == snapshot.LastIndex {
+				args.PrevLogTerm = snapshot.LastTerm
+			}
+			if args.PrevLogIndex < snapshot.LastIndex {
+				snapshotArgs := rf.makeInstallSnapshotArgs()
+				snapshotReply := SnapshotReply{}
+				rf.mu.Unlock()
+				ok = rf.sendInstallSnapshot(rf.me, &snapshotArgs, &snapshotReply)
+				if !ok {
+					return
+				}
+				rf.mu.Lock()
+				rf.solveInstallSnapshot(server, &snapshot, &snapshotReply, originTerm, nextIndexBak)
+				rf.mu.Unlock()
+				return
+			}
+		} else {
+			args.PrevLogTerm = rf.log.getLogEntryByIndex(args.PrevLogIndex).Term
+		}
 		if !isHeartbeat {
 			args.Entries = rf.log.getLogEntryByRange(rf.nextIndex[server], rf.log.getLastLogEntryIndex()+1)
 		}
-		nextIndexBak := rf.nextIndex[server]
 		reply := &AppendEntriesReply{}
-		originTerm := rf.currentTerm
 		rf.mu.Unlock()
 
-		ok := rf.sendAppendEntries(server, args, reply)
+		ok = rf.sendAppendEntries(server, args, reply)
 		// rpc调用失败
 		if !ok {
 			return
@@ -596,20 +665,6 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 	}
 }
 
-//
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-//
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 
@@ -666,18 +721,28 @@ func (rf *Raft) doApplyMsg() {
 					rf.mu.Unlock()
 					break
 				}
-				applyMsg := ApplyMsg{
-					CommandValid: true,
-					Command:      rf.log.getLogEntryByIndex(rf.lastApplied + 1).Command,
-					CommandIndex: int(rf.lastApplied + 1),
-					Term:         rf.log.getLogEntryByIndex(rf.lastApplied + 1).Term,
+				var applyMsg ApplyMsg
+				if rf.lastApplied+1 < rf.log.Base {
+					snapshot, ok := rf.readSnapShot()
+					if !ok {
+						panic("read invalid snapshot in raft doApplyMsg")
+					}
+					applyMsg = ApplyMsg{
+						CommandValid: false,
+						Snapshot:     snapshot,
+					}
+					rf.lastApplied = snapshot.LastIndex
+				} else {
+					applyMsg = ApplyMsg{
+						CommandValid: true,
+						Command:      rf.log.getLogEntryByIndex(rf.lastApplied + 1).Command,
+						CommandIndex: int(rf.lastApplied + 1),
+						Term:         rf.log.getLogEntryByIndex(rf.lastApplied + 1).Term,
+					}
+					rf.lastApplied++
 				}
 				rf.mu.Unlock()
 				rf.applyCh <- applyMsg
-
-				rf.mu.Lock()
-				rf.lastApplied++
-				rf.mu.Unlock()
 			}
 		}
 	}
@@ -851,10 +916,7 @@ func (rf *Raft) GetLogStr() string {
 
 }
 
-func (rf *Raft) MakeSnapshot(snapshot *Snapshot) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
+func (rf *Raft) makeSnapshotWithoutLock(snapshot *Snapshot) {
 	rf.log.discardOldLog(snapshot.LastIndex)
 	raftData := rf.getRaftPersistentState()
 
@@ -867,6 +929,12 @@ func (rf *Raft) MakeSnapshot(snapshot *Snapshot) {
 	snapshotData := w.Bytes()
 
 	rf.persister.SaveStateAndSnapshot(raftData, snapshotData)
+}
+
+func (rf *Raft) MakeSnapshot(snapshot *Snapshot) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.makeSnapshotWithoutLock(snapshot)
 }
 
 func Make(peers []*labrpc.ClientEnd, me int,

@@ -29,10 +29,10 @@ func Min(arg1 uint64, arg2 uint64) uint64 {
 const raftLogCapacity = 1024 * 8
 
 type RaftLog struct {
+	// TODO: Used is useless.
 	Used uint64
 	// 表示下一个要入队的位置，最后一条日志的位置应该为in-1
 	In   uint64
-	Out  uint64
 	Log  []*LogEntry
 	Base uint64
 }
@@ -44,7 +44,6 @@ func newRaftLog() *RaftLog {
 	log := &RaftLog{
 		Used: 1,
 		In:   1,
-		Out:  0,
 		Log:  make([]*LogEntry, raftLogCapacity),
 		Base: 0,
 	}
@@ -60,7 +59,8 @@ func newRaftLog() *RaftLog {
 
 // 删除(,guard]所有的日志
 func (log *RaftLog) discardOldLog(guard uint64) {
-	log.Log = append(log.Log[:log.Base], log.Log[guard-log.Base+1:]...)
+	log.Log = append(log.Log[:0], log.Log[guard-log.Base+1:]...)
+	log.Used -= guard - log.Base + 1
 	log.Base = guard + 1
 }
 
@@ -76,7 +76,7 @@ func (log *RaftLog) getLastLogEntry() (*LogEntry, uint64) {
 }
 
 func (log *RaftLog) getLogEntryByIndex(index uint64) *LogEntry {
-	if index >= log.Out && index < log.In {
+	if index >= log.Base && index < log.In {
 		return log.Log[index-log.Base]
 	}
 	return nil
@@ -85,7 +85,7 @@ func (log *RaftLog) getLogEntryByIndex(index uint64) *LogEntry {
 // 获得[from, to)区间内的日志
 func (log *RaftLog) getLogEntryByRange(from uint64, to uint64) []*LogEntry {
 	entries := []*LogEntry{}
-	if !(from >= log.Out && to <= log.In) {
+	if !(from >= log.Base && to <= log.In) {
 		return nil
 	}
 	for i := from; i < to; i++ {
@@ -130,7 +130,7 @@ func (log *RaftLog) appendEntries(entries []*LogEntry) uint64 {
 //
 func (log *RaftLog) getLogStr() string {
 	logStr := []string{}
-	for i := log.Out; i < log.In; i++ {
+	for i := log.Base; i < log.In; i++ {
 		logStr = append(logStr, fmt.Sprintf("(%d:%d)", i, log.Log[i-log.Base]))
 	}
 	return strings.Join(logStr, ",")
