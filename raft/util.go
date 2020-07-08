@@ -8,7 +8,7 @@ import (
 )
 
 // Debugging
-const Debug = 0
+const Debug = 1
 
 var ServerId int32 = -1
 
@@ -26,8 +26,6 @@ func Min(arg1 uint64, arg2 uint64) uint64 {
 	return arg2
 }
 
-const raftLogCapacity = 1024 * 8
-
 type RaftLog struct {
 	// TODO: Used is useless.
 	Used uint64
@@ -44,16 +42,12 @@ func newRaftLog() *RaftLog {
 	log := &RaftLog{
 		Used: 1,
 		In:   1,
-		Log:  make([]*LogEntry, raftLogCapacity),
+		Log:  make([]*LogEntry, 0),
 		Base: 0,
 	}
-
-	// 此处全部初始化的原因是因为persist的时候数组的元素不能有nil
-	for i := 0; i < len(log.Log); i++ {
-		log.Log[i] = &LogEntry{
-			Term: 0,
-		}
-	}
+	log.Log = append(log.Log, &LogEntry{
+		Term: 0,
+	})
 	return log
 }
 
@@ -99,6 +93,7 @@ func (log *RaftLog) deleteEntriesByIndex(preIndex uint64) {
 	oldIn := log.In
 	log.In = preIndex + 1
 	log.Used -= oldIn - log.In
+	log.Log = append(log.Log[:preIndex-log.Base+1], log.Log[len(log.Log):]...)
 }
 
 // 比较当前节点从(preLogIndex, preLogIndex+len(entries)]的日志，当前节点的日志长度不足，或者日志不匹配时返回false
@@ -119,10 +114,8 @@ func (log *RaftLog) compareEntries(preLogIndex uint64, entries []*LogEntry) bool
 // 追加日志切片，返回开始追加的日志位置
 func (log *RaftLog) appendEntries(entries []*LogEntry) uint64 {
 	startIndex := log.In
-	for _, entry := range entries {
-		log.Log[log.In-log.Base] = entry
-		log.In++
-	}
+	log.Log = append(log.Log, entries...)
+	log.In += uint64(len(entries))
 	log.Used += uint64(len(entries))
 	return startIndex
 }

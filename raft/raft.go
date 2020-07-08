@@ -397,6 +397,7 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 }
 
 func (rf *Raft) InstallSnapshot(args *SnapshotArgs, reply *SnapshotReply) {
+	DPrintf("InstallSnapshot called")
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -697,6 +698,7 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.nodeState, Stopped)
 }
 
+// 从guard开始向前搜索，找到第一条周期为term的日志索引
 func (rf *Raft) getTermFisrtlogIndex(term uint64, guard uint64) uint64 {
 	for rf.log.getLogEntryByIndex(guard).Term == term {
 		guard--
@@ -879,7 +881,7 @@ func (rf *Raft) leaderFlow() {
 			return
 		}
 		match := getMajorityMatchIndex(rf.matchIndex)
-		if rf.log.getLogEntryByIndex(match).Term == rf.currentTerm && match > rf.commitIndex {
+		if match > rf.commitIndex && rf.log.getLogEntryByIndex(match).Term == rf.currentTerm {
 			rf.commitIndex = match
 			select {
 			case rf.commitAlterCh <- struct{}{}:
@@ -932,6 +934,7 @@ func (rf *Raft) makeSnapshotWithoutLock(snapshot *Snapshot) {
 }
 
 func (rf *Raft) MakeSnapshot(snapshot *Snapshot) {
+	DPrintf("MakeSnapshot called")
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.makeSnapshotWithoutLock(snapshot)

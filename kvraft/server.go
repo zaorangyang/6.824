@@ -188,7 +188,7 @@ func (kv *KVServer) apply() {
 }
 
 func (kv *KVServer) makeSnapshot(lastTerm uint64, lastIndex uint64) {
-	if kv.persister.RaftStateSize() <= kv.maxraftstate {
+	if kv.maxraftstate == -1 || kv.persister.RaftStateSize() <= kv.maxraftstate {
 		return
 	}
 	snapshot := raft.Snapshot{
