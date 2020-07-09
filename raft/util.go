@@ -1,14 +1,16 @@
 package raft
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"github.com/Drewryz/6.824/labgob"
 	"log"
 	"strings"
 )
 
 // Debugging
-const Debug = 1
+const Debug = 0
 
 var ServerId int32 = -1
 
@@ -30,9 +32,11 @@ type RaftLog struct {
 	// TODO: Used is useless.
 	Used uint64
 	// 表示下一个要入队的位置，最后一条日志的位置应该为in-1
-	In   uint64
-	Log  []*LogEntry
-	Base uint64
+	In                uint64
+	Log               []*LogEntry
+	Base              uint64
+	SnapshotLastIndex uint64
+	SnapshotLastTerm  uint64
 }
 
 var noLogErr = errors.New("no log")
@@ -58,22 +62,39 @@ func (log *RaftLog) discardOldLog(guard uint64) {
 	log.Base = guard + 1
 }
 
+func (log *RaftLog) setSnapshotLastIndexAndSnapshotLastTerm(snapshotLastIndex uint64, snapshotLastTerm uint64) {
+	log.SnapshotLastIndex = snapshotLastIndex
+	log.SnapshotLastTerm = snapshotLastTerm
+}
+
 func (log *RaftLog) getLastLogEntryIndex() uint64 {
 	return log.In - 1
 }
 
-func (log *RaftLog) getLastLogEntry() (*LogEntry, uint64) {
+func (log *RaftLog) getLastLogEntryIndexAndTerm() (uint64, uint64) {
 	if log.Used == 0 {
-		return nil, 0
+		if len(log.Log) != 0 {
+			panic("getLastLogEntryIndexAndTerm error.")
+		}
+		return log.SnapshotLastIndex, log.SnapshotLastTerm
 	}
-	return log.Log[log.In-log.Base-1], log.In - 1
+	return log.In - 1, log.Log[log.In-log.Base-1].Term
 }
 
-func (log *RaftLog) getLogEntryByIndex(index uint64) *LogEntry {
+// 如果index索引到快照中，返回true
+func (log *RaftLog) getLogEntryByIndex(index uint64) (bool, *LogEntry) {
 	if index >= log.Base && index < log.In {
-		return log.Log[index-log.Base]
+		return false, log.Log[index-log.Base]
 	}
-	return nil
+	if index == log.SnapshotLastIndex {
+		return false, &LogEntry{
+			Term: log.SnapshotLastTerm,
+		}
+	}
+	if index < log.SnapshotLastIndex {
+		return true, nil
+	}
+	return false, nil
 }
 
 // 获得[from, to)区间内的日志
@@ -103,7 +124,8 @@ func (log *RaftLog) compareEntries(preLogIndex uint64, entries []*LogEntry) bool
 		if curIndex >= log.In {
 			return false
 		}
-		if log.getLogEntryByIndex(curIndex).Term != entries[i].Term {
+		_, entry := log.getLogEntryByIndex(curIndex)
+		if entry.Term != entries[i].Term {
 			return false
 		}
 		curIndex++
@@ -120,11 +142,26 @@ func (log *RaftLog) appendEntries(entries []*LogEntry) uint64 {
 	return startIndex
 }
 
-//
 func (log *RaftLog) getLogStr() string {
 	logStr := []string{}
 	for i := log.Base; i < log.In; i++ {
 		logStr = append(logStr, fmt.Sprintf("(%d:%d)", i, log.Log[i-log.Base]))
 	}
 	return strings.Join(logStr, ",")
+}
+
+func readSnapShot(persister *Persister) (Snapshot, bool) {
+	data := persister.ReadSnapshot()
+	if data == nil || len(data) < 1 {
+		return Snapshot{}, false
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var snapshot Snapshot
+	err := d.Decode(&snapshot)
+	if err != nil {
+		panic(err)
+	}
+	return snapshot, true
 }

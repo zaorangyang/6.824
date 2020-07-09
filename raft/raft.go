@@ -228,20 +228,76 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
-func (rf *Raft) readSnapShot() (Snapshot, bool) {
-	data := rf.persister.ReadSnapshot()
-	if data == nil || len(data) < 1 {
-		return Snapshot{}, false
-	}
-	r := bytes.NewBuffer(data)
-	d := labgob.NewDecoder(r)
+func (rf *Raft) InstallSnapshot(args *SnapshotArgs, reply *SnapshotReply) {
+	DPrintf("InstallSnapshot called")
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	var snapshot Snapshot
-	err := d.Decode(&snapshot)
+	reply.Term = rf.currentTerm
+	if args.CurrentTerm < rf.currentTerm {
+		return
+	}
+
+	// 遇到新term
+	if args.CurrentTerm > rf.currentTerm {
+		rf.currentTerm = args.CurrentTerm
+		rf.votedFor = -1
+		rf.persist()
+		if rf.role != Follower {
+			rf.role = Follower
+		}
+	}
+
+	curSnapshot, ok := readSnapShot(rf.persister)
+	if ok && curSnapshot.LastIndex >= args.Snapshot.LastIndex {
+		DPrintf("InstallSnapshot receive old snapshot")
+		return
+	}
+
+	rf.makeSnapshotWithoutLock(&args.Snapshot)
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *SnapshotArgs, reply *SnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
+}
+
+func (rf *Raft) makeInstallSnapshotArgs() SnapshotArgs {
+	snapshot, ok := readSnapShot(rf.persister)
+	if !ok {
+		DPrintf("invalid snapshot in leader calling InstallSnapshot")
+		os.Exit(3)
+	}
+
+	args := SnapshotArgs{
+		CurrentTerm: rf.currentTerm,
+		LeaderId:    rf.me,
+		Snapshot:    snapshot,
+	}
+	return args
+}
+
+func (rf *Raft) makeSnapshotWithoutLock(snapshot *Snapshot) {
+	rf.log.discardOldLog(snapshot.LastIndex)
+	rf.log.setSnapshotLastIndexAndSnapshotLastTerm(snapshot.LastIndex, snapshot.LastTerm)
+	raftData := rf.getRaftPersistentState()
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	err := e.Encode(snapshot)
 	if err != nil {
 		panic(err)
 	}
-	return snapshot, true
+	snapshotData := w.Bytes()
+
+	rf.persister.SaveStateAndSnapshot(raftData, snapshotData)
+}
+
+func (rf *Raft) MakeSnapshot(snapshot *Snapshot) {
+	DPrintf("MakeSnapshot called")
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.makeSnapshotWithoutLock(snapshot)
 }
 
 func logUptodate(firstTerm uint64, firstIndex uint64, secondTerm uint64, secondIndex uint64) bool {
@@ -300,8 +356,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// 投票。If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
-	lastLogEntry, lastLogIndex := rf.log.getLastLogEntry()
-	atLeastUptodate := logUptodate(args.LastLogTerm, args.LastLogIndex, lastLogEntry.Term, lastLogIndex)
+	lastLogIndex, lastLogTerm := rf.log.getLastLogEntryIndexAndTerm()
+	atLeastUptodate := logUptodate(args.LastLogTerm, args.LastLogIndex, lastLogTerm, lastLogIndex)
 	voteGranted := (rf.votedFor == args.CandidateId || rf.votedFor == -1) && atLeastUptodate
 	if voteGranted {
 		reply.VoteGranted = true
@@ -336,12 +392,12 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 		go func(server int) {
 			defer wg.Done()
 			rf.mu.Lock()
-			lastLog, lastLogIndex := rf.log.getLastLogEntry()
+			lastLogIndex, lastLogTerm := rf.log.getLastLogEntryIndexAndTerm()
 			args := &RequestVoteArgs{
 				CurrentTerm:  rf.currentTerm,
 				CandidateId:  rf.me,
 				LastLogIndex: lastLogIndex,
-				LastLogTerm:  lastLog.Term,
+				LastLogTerm:  lastLogTerm,
 			}
 			DPrintf("节点%d，sendAndSolveRequestVote,  currentTerm = %d", rf.me, rf.currentTerm)
 			originTerm := rf.currentTerm
@@ -396,55 +452,6 @@ func (rf *Raft) sendAndSolveRequestVote(getMajorityVotesCh chan struct{}) {
 	}
 }
 
-func (rf *Raft) InstallSnapshot(args *SnapshotArgs, reply *SnapshotReply) {
-	DPrintf("InstallSnapshot called")
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	reply.Term = rf.currentTerm
-	if args.CurrentTerm < rf.currentTerm {
-		return
-	}
-
-	// 遇到新term
-	if args.CurrentTerm > rf.currentTerm {
-		rf.currentTerm = args.CurrentTerm
-		rf.votedFor = -1
-		rf.persist()
-		if rf.role != Follower {
-			rf.role = Follower
-		}
-	}
-
-	curSnapshot, ok := rf.readSnapShot()
-	if ok && curSnapshot.LastIndex >= args.Snapshot.LastIndex {
-		DPrintf("InstallSnapshot receive old snapshot")
-		return
-	}
-
-	rf.makeSnapshotWithoutLock(&args.Snapshot)
-}
-
-func (rf *Raft) sendInstallSnapshot(server int, args *SnapshotArgs, reply *SnapshotReply) bool {
-	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
-	return ok
-}
-
-func (rf *Raft) makeInstallSnapshotArgs() SnapshotArgs {
-	snapshot, ok := rf.readSnapShot()
-	if !ok {
-		DPrintf("invalid snapshot in leader calling InstallSnapshot")
-		os.Exit(3)
-	}
-
-	args := SnapshotArgs{
-		CurrentTerm: rf.currentTerm,
-		LeaderId:    rf.me,
-		Snapshot:    snapshot,
-	}
-	return args
-}
-
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	DPrintf("节点%d接收到节点%d, AppendEntries before lock", rf.me, args.LeaderId)
 	rf.mu.Lock()
@@ -484,16 +491,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.role = Follower
 	}
 
-	entry := rf.log.getLogEntryByIndex(args.PrevLogIndex)
+	// TODO: 如果遇到很旧的包，args.PrevLogIndex指向的日志已经做了snapshot，会发生什么？
+	// 这种情况直接返回OlderRequest
+	// TODO: getLogEntryByIndex这个函数，不能返回snapshot中的lastindex，lastterm，这是个错误
+
+	inSnapshot, entry := rf.log.getLogEntryByIndex(args.PrevLogIndex)
+	if inSnapshot {
+		reply.FailReason = OlderRequst
+		return
+	}
 	// 日志不一致返回false
 	if entry == nil || entry.Term != args.PrevLogTerm {
 		reply.FailReason = LogUnconsistent
-		if entry == nil {
+		// 日志回溯优化
+		if entry == nil { // PrevLogIndex不存在日志
 			reply.ConflictIndex = rf.log.getLastLogEntryIndex() + 1
 			reply.ConflictTerm = 0
-		} else {
-			reply.ConflictTerm = rf.log.getLogEntryByIndex(args.PrevLogIndex).Term
-			reply.ConflictIndex = rf.getTermFisrtlogIndex(reply.ConflictTerm, args.PrevLogIndex)
+		} else { // PrevLogIndex存在日志，但是Term不一致
+			reply.ConflictTerm = entry.Term
+			reply.ConflictIndex = rf.getFisrtConflictIndexByConflictTerm(reply.ConflictTerm, args.PrevLogIndex)
 		}
 		return
 	}
@@ -578,7 +594,7 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 		originTerm := rf.currentTerm
 
 		// TODO: snapshot的几个状态应该缓冲起来，不然实际生产环境中持续读快照会浪费太多的IO资源
-		snapshot, ok := rf.readSnapShot()
+		snapshot, ok := readSnapShot(rf.persister)
 		if ok {
 			if args.PrevLogIndex == snapshot.LastIndex {
 				args.PrevLogTerm = snapshot.LastTerm
@@ -597,7 +613,8 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 				return
 			}
 		} else {
-			args.PrevLogTerm = rf.log.getLogEntryByIndex(args.PrevLogIndex).Term
+			_, entry := rf.log.getLogEntryByIndex(args.PrevLogIndex)
+			args.PrevLogTerm = entry.Term
 		}
 		if !isHeartbeat {
 			args.Entries = rf.log.getLogEntryByRange(rf.nextIndex[server], rf.log.getLastLogEntryIndex()+1)
@@ -643,8 +660,8 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 			if reply.ConflictTerm == 0 {
 				newNextIndex = reply.ConflictIndex
 			} else {
-				searchRes := rf.getTermLastlogIndex(reply.ConflictTerm, args.PrevLogIndex)
-				if searchRes == 0 {
+				searchRes := rf.getLastlogIndexByTerm(reply.ConflictTerm, args.PrevLogIndex)
+				if searchRes == 0 { // 未找到，跳过ConflictTerm
 					newNextIndex = reply.ConflictIndex
 				} else {
 					newNextIndex = searchRes + 1
@@ -698,16 +715,31 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.nodeState, Stopped)
 }
 
-// 从guard开始向前搜索，找到第一条周期为term的日志索引
-func (rf *Raft) getTermFisrtlogIndex(term uint64, guard uint64) uint64 {
-	for rf.log.getLogEntryByIndex(guard).Term == term {
+// 从guard开始向前搜索，找到第一条周期为conflictTerm的日志索引
+func (rf *Raft) getFisrtConflictIndexByConflictTerm(conflictTerm uint64, guard uint64) uint64 {
+	for {
+		inSnapshot, entry := rf.log.getLogEntryByIndex(guard)
+		if inSnapshot {
+			// tracky here. 回溯到snapshot中时，ConflictIndex应该是snapshot.LastIndex-1+2
+			return guard + 2
+		}
+		if entry.Term != conflictTerm {
+			return guard + 1
+		}
 		guard--
 	}
-	return guard + 1
 }
 
-func (rf *Raft) getTermLastlogIndex(term uint64, guard uint64) uint64 {
-	for guard > 0 && rf.log.getLogEntryByIndex(guard).Term != term {
+// 从guard开始向前搜索，找到最后一条周期为term的日志索引
+func (rf *Raft) getLastlogIndexByTerm(term uint64, guard uint64) uint64 {
+	for guard > 0 {
+		inSnapshot, entry := rf.log.getLogEntryByIndex(guard)
+		if inSnapshot { // 回溯到snapshot中表示未找到
+			return 0
+		}
+		if entry.Term == term {
+			return guard
+		}
 		guard--
 	}
 	return guard
@@ -725,7 +757,7 @@ func (rf *Raft) doApplyMsg() {
 				}
 				var applyMsg ApplyMsg
 				if rf.lastApplied+1 < rf.log.Base {
-					snapshot, ok := rf.readSnapShot()
+					snapshot, ok := readSnapShot(rf.persister)
 					if !ok {
 						panic("read invalid snapshot in raft doApplyMsg")
 					}
@@ -735,11 +767,12 @@ func (rf *Raft) doApplyMsg() {
 					}
 					rf.lastApplied = snapshot.LastIndex
 				} else {
+					_, entry := rf.log.getLogEntryByIndex(rf.lastApplied + 1)
 					applyMsg = ApplyMsg{
 						CommandValid: true,
-						Command:      rf.log.getLogEntryByIndex(rf.lastApplied + 1).Command,
+						Command:      entry.Command,
 						CommandIndex: int(rf.lastApplied + 1),
-						Term:         rf.log.getLogEntryByIndex(rf.lastApplied + 1).Term,
+						Term:         entry.Term,
 					}
 					rf.lastApplied++
 				}
@@ -881,11 +914,15 @@ func (rf *Raft) leaderFlow() {
 			return
 		}
 		match := getMajorityMatchIndex(rf.matchIndex)
-		if match > rf.commitIndex && rf.log.getLogEntryByIndex(match).Term == rf.currentTerm {
-			rf.commitIndex = match
-			select {
-			case rf.commitAlterCh <- struct{}{}:
-			default:
+		if match > rf.commitIndex {
+			// snapshot针对的是已经提交的日志，此时getLogEntryByIndex(match)得到的log一定是有效的
+			_, entry := rf.log.getLogEntryByIndex(match)
+			if entry.Term == rf.currentTerm {
+				rf.commitIndex = match
+				select {
+				case rf.commitAlterCh <- struct{}{}:
+				default:
+				}
 			}
 		}
 		rf.mu.Unlock()
@@ -916,28 +953,6 @@ func (rf *Raft) run() {
 func (rf *Raft) GetLogStr() string {
 	return fmt.Sprintf("%d, %d, %s", rf.role, rf.currentTerm, rf.log.getLogStr())
 
-}
-
-func (rf *Raft) makeSnapshotWithoutLock(snapshot *Snapshot) {
-	rf.log.discardOldLog(snapshot.LastIndex)
-	raftData := rf.getRaftPersistentState()
-
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	err := e.Encode(snapshot)
-	if err != nil {
-		panic(err)
-	}
-	snapshotData := w.Bytes()
-
-	rf.persister.SaveStateAndSnapshot(raftData, snapshotData)
-}
-
-func (rf *Raft) MakeSnapshot(snapshot *Snapshot) {
-	DPrintf("MakeSnapshot called")
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.makeSnapshotWithoutLock(snapshot)
 }
 
 func Make(peers []*labrpc.ClientEnd, me int,
