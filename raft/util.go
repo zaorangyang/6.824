@@ -57,9 +57,17 @@ func newRaftLog() *RaftLog {
 
 // 删除(,guard]所有的日志
 func (log *RaftLog) discardOldLog(guard uint64) {
-	log.Log = append(log.Log[:0], log.Log[guard-log.Base+1:]...)
-	log.Used -= guard - log.Base + 1
-	log.Base = guard + 1
+	DPrintf("discardOldLog, log.Base=%v, len(log)=%v, log.Used=%v, log.In=%v, guard=%v", log.Base, len(log.Log), log.Used, log.In, guard)
+	if guard >= log.In {
+		log.Log = make([]*LogEntry, 0)
+		log.Used = 0
+		log.Base = guard + 1
+		log.In = log.Base
+	} else {
+		log.Log = append(log.Log[:0], log.Log[guard-log.Base+1:]...)
+		log.Used -= guard - log.Base + 1
+		log.Base = guard + 1
+	}
 }
 
 func (log *RaftLog) setSnapshotLastIndexAndSnapshotLastTerm(snapshotLastIndex uint64, snapshotLastTerm uint64) {

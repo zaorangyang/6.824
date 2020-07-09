@@ -144,11 +144,7 @@ func (kv *KVServer) apply() {
 		case msg := <-kv.applyCh:
 			if !msg.CommandValid {
 				DPrintf("[server] apply snapshot ")
-				snapshot, ok := msg.Command.(raft.Snapshot)
-				if !ok {
-					DPrintf("server get unrecognized snapshot format")
-					os.Exit(1)
-				}
+				snapshot := msg.Snapshot
 				kv.clerkBolts = snapshot.ClerkBolts
 				kv.data = snapshot.State
 				continue

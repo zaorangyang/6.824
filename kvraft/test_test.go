@@ -616,7 +616,6 @@ func TestSnapshotRPC3B(t *testing.T) {
 
 	Put(cfg, ck, "a", "A")
 	check(cfg, t, ck, "a", "A")
-	fmt.Println("mark1...")
 	// a bunch of puts into the majority partition.
 	cfg.partition([]int{0, 1}, []int{2})
 	{
@@ -628,13 +627,11 @@ func TestSnapshotRPC3B(t *testing.T) {
 		time.Sleep(electionTimeout)
 		Put(cfg, ck1, "b", "B")
 	}
-	fmt.Println("mark2...")
 	// check that the majority partition has thrown away
 	// most of its log entries.
 	if cfg.LogSize() > 2*maxraftstate {
 		t.Fatalf("logs were not trimmed (%v > 2*%v)", cfg.LogSize(), maxraftstate)
 	}
-	fmt.Println("mark3...")
 	// now make group that requires participation of
 	// lagging server, so that it has to catch up.
 	cfg.partition([]int{0, 2}, []int{1})
@@ -647,7 +644,6 @@ func TestSnapshotRPC3B(t *testing.T) {
 		check(cfg, t, ck1, "1", "1")
 		check(cfg, t, ck1, "49", "49")
 	}
-	fmt.Println("mark4...")
 
 	// now everybody
 	cfg.partition([]int{0, 1, 2}, []int{})
@@ -656,7 +652,6 @@ func TestSnapshotRPC3B(t *testing.T) {
 	check(cfg, t, ck, "c", "C")
 	check(cfg, t, ck, "e", "E")
 	check(cfg, t, ck, "1", "1")
-	fmt.Println("mark5...")
 	cfg.end()
 }
 

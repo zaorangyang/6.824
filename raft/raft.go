@@ -229,7 +229,7 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 func (rf *Raft) InstallSnapshot(args *SnapshotArgs, reply *SnapshotReply) {
-	DPrintf("InstallSnapshot called")
+	DPrintf("[%v] InstallSnapshot called", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -258,6 +258,7 @@ func (rf *Raft) InstallSnapshot(args *SnapshotArgs, reply *SnapshotReply) {
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *SnapshotArgs, reply *SnapshotReply) bool {
+	DPrintf("节点%d向节点%d, sendInstallSnapshot， %v", rf.me, server, args)
 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
 	return ok
 }
@@ -294,10 +295,13 @@ func (rf *Raft) makeSnapshotWithoutLock(snapshot *Snapshot) {
 }
 
 func (rf *Raft) MakeSnapshot(snapshot *Snapshot) {
-	DPrintf("MakeSnapshot called")
+	DPrintf("[%v] MakeSnapshot called: LastIndex=%v, LastTerm=%v", rf.me, snapshot.LastIndex, snapshot.LastTerm)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	DPrintf("[%v] log before snapshot: %s", rf.me, rf.GetLogStr())
 	rf.makeSnapshotWithoutLock(snapshot)
+	DPrintf("[%v] log after snapshot: %s", rf.me, rf.GetLogStr())
+
 }
 
 func logUptodate(firstTerm uint64, firstIndex uint64, secondTerm uint64, secondIndex uint64) bool {
@@ -538,7 +542,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	DPrintf("节点%d向节点%d, sendAppendEntries", rf.me, server)
+	DPrintf("节点%d向节点%d, sendAppendEntries， %v", rf.me, server, args)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if ok {
 		DPrintf("节点%d向节点%d, sendAppendEntries, 成功", rf.me, server)
@@ -593,36 +597,31 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 		nextIndexBak := rf.nextIndex[server]
 		originTerm := rf.currentTerm
 
-		// TODO: snapshot的几个状态应该缓冲起来，不然实际生产环境中持续读快照会浪费太多的IO资源
-		snapshot, ok := readSnapShot(rf.persister)
-		if ok {
-			if args.PrevLogIndex == snapshot.LastIndex {
-				args.PrevLogTerm = snapshot.LastTerm
-			}
-			if args.PrevLogIndex < snapshot.LastIndex {
-				snapshotArgs := rf.makeInstallSnapshotArgs()
-				snapshotReply := SnapshotReply{}
-				rf.mu.Unlock()
-				ok = rf.sendInstallSnapshot(rf.me, &snapshotArgs, &snapshotReply)
-				if !ok {
-					return
-				}
-				rf.mu.Lock()
-				rf.solveInstallSnapshot(server, &snapshot, &snapshotReply, originTerm, nextIndexBak)
-				rf.mu.Unlock()
+		inSnapshot, entry := rf.log.getLogEntryByIndex(args.PrevLogIndex)
+		if inSnapshot {
+			snapshot, _ := readSnapShot(rf.persister)
+			snapshotArgs := rf.makeInstallSnapshotArgs()
+			snapshotReply := SnapshotReply{}
+			rf.mu.Unlock()
+			ok := rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
+			if !ok {
 				return
 			}
+			rf.mu.Lock()
+			rf.solveInstallSnapshot(server, &snapshot, &snapshotReply, originTerm, nextIndexBak)
+			rf.mu.Unlock()
+			return
 		} else {
-			_, entry := rf.log.getLogEntryByIndex(args.PrevLogIndex)
 			args.PrevLogTerm = entry.Term
 		}
+
 		if !isHeartbeat {
 			args.Entries = rf.log.getLogEntryByRange(rf.nextIndex[server], rf.log.getLastLogEntryIndex()+1)
 		}
 		reply := &AppendEntriesReply{}
 		rf.mu.Unlock()
 
-		ok = rf.sendAppendEntries(server, args, reply)
+		ok := rf.sendAppendEntries(server, args, reply)
 		// rpc调用失败
 		if !ok {
 			return
