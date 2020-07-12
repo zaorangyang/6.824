@@ -572,15 +572,6 @@ func (rf *Raft) solveInstallSnapshot(server int, snapshot *Snapshot, reply *Snap
 
 // TODO: 转换成follower应该如何优雅地做
 func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, isHeartbeat bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			DPrintf("%v", r)
-			debug.PrintStack()
-			DPrintf("[%d] rf.nextIndex[server]= %d || log: %s || rf.role=%d", rf.me, rf.nextIndex[server], rf.log.getLogStr(), rf.role)
-			os.Exit(1)
-		}
-	}()
-
 	for {
 		// TODO: 完善raft优雅退出机制. 测试组件下线一个raft节点时，只是将其从集群的网络中隔离，这导致被下线的节点重复创建用于heartbeat和
 		//  复制日志的协程，从而导致TestFigure82C这个case协程超限：race: limit on 8128 simultaneously alive goroutines is exceeded, dying
@@ -612,6 +603,10 @@ func (rf *Raft) sendAndSolveAppendEntries(server int, args *AppendEntriesArgs, i
 			rf.mu.Unlock()
 			return
 		} else {
+			if entry == nil {
+				fmt.Println(fmt.Sprintf("args.PrevLogIndex = %v, RaftLog State: %s", args.PrevLogIndex, rf.log.getRaftLogState()))
+				panic("error: get nil entry in sendAndSolveAppendEntries")
+			}
 			args.PrevLogTerm = entry.Term
 		}
 
@@ -700,6 +695,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.persist()
 	rf.nextIndex[rf.me]++
 	rf.matchIndex[rf.me] = rf.nextIndex[rf.me] - 1
+	// 复制日志
+	rf.doReplicateLogOrHearbeart(false)
 	return index, term, isLeader
 }
 
@@ -892,8 +889,6 @@ func (rf *Raft) leaderFlow() {
 			return
 		}
 		DPrintf("节点%d, leader main flow will send AppendEntries", rf.me)
-		// 复制日志
-		rf.doReplicateLogOrHearbeart(false)
 		rf.mu.Unlock()
 
 		timer := time.NewTimer(HeartBeatInterval)
