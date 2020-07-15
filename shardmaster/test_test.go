@@ -27,6 +27,7 @@ func check(t *testing.T, groups []int, ck *Clerk) {
 		for s, g := range c.Shards {
 			_, ok := c.Groups[g]
 			if ok == false {
+				fmt.Println(fmt.Sprintf("config: %v", c))
 				t.Fatalf("shard %v -> invalid group %v", s, g)
 			}
 		}
@@ -90,15 +91,18 @@ func TestBasic(t *testing.T) {
 	cfa[0] = ck.Query(-1)
 
 	check(t, []int{}, ck)
+	fmt.Println("mark1")
 
 	var gid1 int = 1
 	ck.Join(map[int][]string{gid1: []string{"x", "y", "z"}})
 	check(t, []int{gid1}, ck)
+	fmt.Println("mark2")
 	cfa[1] = ck.Query(-1)
 
 	var gid2 int = 2
 	ck.Join(map[int][]string{gid2: []string{"a", "b", "c"}})
 	check(t, []int{gid1, gid2}, ck)
+	fmt.Println("mark3")
 	cfa[2] = ck.Query(-1)
 
 	cfx := ck.Query(-1)
@@ -110,9 +114,10 @@ func TestBasic(t *testing.T) {
 	if len(sa2) != 3 || sa2[0] != "a" || sa2[1] != "b" || sa2[2] != "c" {
 		t.Fatalf("wrong servers for gid %v: %v\n", gid2, sa2)
 	}
-
+	fmt.Println("mark3.5")
 	ck.Leave([]int{gid1})
 	check(t, []int{gid2}, ck)
+	fmt.Println("mark4")
 	cfa[4] = ck.Query(-1)
 
 	ck.Leave([]int{gid2})
@@ -377,4 +382,93 @@ func TestMulti(t *testing.T) {
 	}
 
 	fmt.Printf("  ... Passed\n")
+}
+
+func TestGetShards(t *testing.T) {
+	lastConfig := Config{
+		Shards: [NShards]int{400, 300, 100, 100, 200, 100, 100, 200, 100, 100},
+	}
+	shards := getShards(lastConfig, 4, []int{}, map[int][]string{})
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+	fmt.Println("-------------------------------------")
+	addServers := map[int][]string{}
+	addServers[500] = []string{}
+	shards = getShards(lastConfig, 5, []int{}, addServers)
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+	fmt.Println("-------------------------------------")
+	addServers = map[int][]string{}
+	addServers[500] = []string{}
+	addServers[600] = []string{}
+	addServers[700] = []string{}
+	addServers[800] = []string{}
+	addServers[900] = []string{}
+	addServers[1000] = []string{}
+	shards = getShards(lastConfig, 10, []int{}, addServers)
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+	fmt.Println("-------------------------------------")
+	leaveGids := []int{100}
+	shards = getShards(lastConfig, 3, leaveGids, map[int][]string{})
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+	fmt.Println("-------------------------------------")
+	leaveGids = []int{100, 200, 300}
+	shards = getShards(lastConfig, 1, leaveGids, map[int][]string{})
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+
+}
+
+func TestGetCurTopo(t *testing.T) {
+	fmt.Println("----------------1---------------------")
+
+	curTopo := getCurTopo([NShards]int{400, 300, 100, 100, 200, 100, 100, 200, 100, 100})
+	for gid, shards := range curTopo {
+		fmt.Println(gid)
+		for _, shard := range shards {
+			fmt.Println(shard)
+		}
+		fmt.Println("-------------------------------------")
+	}
+	fmt.Println("----------------2---------------------")
+
+	curTopo = getCurTopo([NShards]int{})
+	for gid, shards := range curTopo {
+		fmt.Println(gid)
+		for _, shard := range shards {
+			fmt.Println(shard)
+		}
+		fmt.Println("-------------------------------------")
+	}
+}
+
+func TestGetUnAssigedSahrds(t *testing.T) {
+	fmt.Println("----------------1---------------------")
+	topo := make(map[int][]int)
+	leaveGids := make([]int, 0)
+	unAssigedSahrds := getUnAssigedSahrds(topo, leaveGids)
+	for _, shard := range unAssigedSahrds {
+		fmt.Println(shard)
+	}
+	fmt.Println("----------------2---------------------")
+	topo[22] = []int{1, 2, 5}
+	topo[11] = []int{4}
+	unAssigedSahrds = getUnAssigedSahrds(topo, leaveGids)
+	for _, shard := range unAssigedSahrds {
+		fmt.Println(shard)
+	}
+	fmt.Println("----------------3---------------------")
+	leaveGids = append(leaveGids, 22)
+	unAssigedSahrds = getUnAssigedSahrds(topo, leaveGids)
+	for _, shard := range unAssigedSahrds {
+		fmt.Println(shard)
+	}
+
 }
