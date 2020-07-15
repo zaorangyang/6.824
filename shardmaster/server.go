@@ -83,7 +83,6 @@ func (sm *ShardMaster) opHandler(op Op) QueryReply {
 }
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
-	DPrintf("[%v] get Join op, args:%v", sm.me, args)
 	op := Op{
 		Op:       "Join",
 		JoinArgs: *args,
@@ -93,12 +92,6 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	res := sm.opHandler(op)
 	reply.Err = res.Err
 	reply.WrongLeader = res.WrongLeader
-	if !reply.WrongLeader && len(reply.Err) == 0 {
-		sm.mu.Lock()
-		config := sm.getConfig(-1)
-		sm.mu.Unlock()
-		DPrintf("[%v] Join success, args:%v, config:%v", sm.me, args, config)
-	}
 }
 
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
@@ -185,7 +178,6 @@ func (sm *ShardMaster) doCommand(op Op) QueryReply {
 			Groups: lastConfig.Groups,
 		}
 		sm.configs = append(sm.configs, newConfig)
-
 	case "Query":
 		queryArgs := op.QueryArgs
 		value.Config = sm.getConfig(queryArgs.Num)
@@ -193,7 +185,7 @@ func (sm *ShardMaster) doCommand(op Op) QueryReply {
 	return value
 }
 
-func getUnAssigedSahrds(curTopo map[int][]int, leaveGids []int) []int {
+func getUnAssigedSahrdsAndDelteGidFromTopo(curTopo map[int][]int, leaveGids []int) []int {
 	// 遍历拓扑，拿到本来就没有分配的shard
 	assignFlag := [NShards]int{}
 	for _, gitShards := range curTopo {
@@ -217,50 +209,84 @@ func getUnAssigedSahrds(curTopo map[int][]int, leaveGids []int) []int {
 	return unAssigedSahrds
 }
 
+func getUnusedGroups(config Config) []int {
+	occuredGids := make(map[int]struct{})
+	for _, gid := range config.Shards {
+		occuredGids[gid] = struct{}{}
+	}
+	unusedGroups := make([]int, 0)
+	for gid, _ := range config.Groups {
+		_, exist := occuredGids[gid]
+		if !exist {
+			unusedGroups = append(unusedGroups, gid)
+		}
+	}
+	return unusedGroups
+}
+
+// 负载均衡。Join操作，传入addServers, Leave操作，传入leaveGids
 func getShards(lastConfig Config, newGroupNum int, leaveGids []int, addServers map[int][]string) [NShards]int {
 	newShards := [NShards]int{}
 	if newGroupNum == 0 {
 		return newShards
 	}
-	// curTopo: gid -> shards[]
+	// 构造当前的拓扑：gid -> shards[]
+	// 构造拓扑的复制集数目要和Join/Leave操作之后的复制集个数相同
 	curTopo := getCurTopo(lastConfig.Shards)
-	unAssigedSahrds := getUnAssigedSahrds(curTopo, leaveGids)
+	unAssigedSahrds := getUnAssigedSahrdsAndDelteGidFromTopo(curTopo, leaveGids)
+	groupLoadShard := getGroupLoadShard(newGroupNum)
 	if len(addServers) > 0 {
 		for gid, _ := range addServers {
+			// 当前集群复制集个数一定要等于目标group个数
+			if len(curTopo) >= len(groupLoadShard) {
+				break
+			}
 			_, exist := curTopo[gid]
 			if !exist {
 				curTopo[gid] = make([]int, 0)
 			}
 		}
 	}
-	shardLoad := getShardLoad(newGroupNum)
+	unusedGroups := getUnusedGroups(lastConfig)
+	for len(curTopo) < len(groupLoadShard) {
+		gid := unusedGroups[len(unusedGroups)-1]
+		unusedGroups = unusedGroups[:len(unusedGroups)-1]
+		curTopo[gid] = make([]int, 0)
+	}
+
+	if len(curTopo) != len(groupLoadShard) {
+		panic("ERROR!")
+	}
+
 	targetTopo := make(map[int][]int)
 	left := 0
-	right := len(shardLoad) - 1
+	right := len(groupLoadShard) - 1
 	for gid, gidShards := range curTopo {
-		if left > right || left >= len(shardLoad) || right < 0 {
+		if left > right || left >= len(groupLoadShard) || right < 0 {
 			break
 		}
-		if len(gidShards) < shardLoad[right] {
+		if len(gidShards) < groupLoadShard[right] {
 			continue
 		}
-		if len(gidShards) > shardLoad[right] {
-			unAssigedSahrds = append(unAssigedSahrds, gidShards[shardLoad[left]:]...)
-			targetTopo[gid] = gidShards[:shardLoad[left]]
+		if len(gidShards) > groupLoadShard[right] {
+			unAssigedSahrds = append(unAssigedSahrds, gidShards[groupLoadShard[left]:]...)
+			targetTopo[gid] = gidShards[:groupLoadShard[left]]
+			delete(curTopo, gid)
 			left++
 		} else {
-			targetTopo[gid] = gidShards[:shardLoad[right]]
+			targetTopo[gid] = gidShards[:groupLoadShard[right]]
+			delete(curTopo, gid)
 			right--
 		}
 	}
 	for gid, gidShards := range curTopo {
-		if left > right || left >= len(shardLoad) || right < 0 {
+		if left > right || left >= len(groupLoadShard) || right < 0 {
 			break
 		}
-		if len(gidShards) >= shardLoad[right] {
+		if len(gidShards) >= groupLoadShard[right] {
 			continue
 		}
-		for len(gidShards) < shardLoad[right] {
+		for len(gidShards) < groupLoadShard[right] {
 			gidShards = append(gidShards, unAssigedSahrds[len(unAssigedSahrds)-1])
 			targetTopo[gid] = gidShards
 			unAssigedSahrds = unAssigedSahrds[:len(unAssigedSahrds)-1]
@@ -276,18 +302,22 @@ func getShards(lastConfig Config, newGroupNum int, leaveGids []int, addServers m
 	return newShards
 }
 
+// 根据复制集的个数，返回每个复制集应该承载的shard数目
 // eg:对于shard为10，复制集个数为4的情况，得到的shardLoad为:[3,3,2,2]
-func getShardLoad(groupNum int) []int {
+func getGroupLoadShard(groupNum int) []int {
+	if groupNum > NShards {
+		groupNum = NShards
+	}
 	baseNum := NShards / groupNum
 	remainNum := NShards % groupNum
-	targetTopo := make([]int, groupNum)
-	for i := 0; i < len(targetTopo); i++ {
-		targetTopo[i] = baseNum
+	groupLoadShard := make([]int, groupNum)
+	for i := 0; i < len(groupLoadShard); i++ {
+		groupLoadShard[i] = baseNum
 	}
 	for i := 0; i < remainNum; i++ {
-		targetTopo[i]++
+		groupLoadShard[i]++
 	}
-	return targetTopo
+	return groupLoadShard
 }
 
 func getCurTopo(shards [NShards]int) map[int][]int {
@@ -317,18 +347,20 @@ func copyGroups(src map[int][]string) map[int][]string {
 
 // TODO: 未考虑为单个复制集删除服务器
 func removeGroups(src map[int][]string, gids []int) map[int][]string {
+	dest := copyGroups(src)
 	for _, gid := range gids {
-		delete(src, gid)
+		delete(dest, gid)
 	}
-	return src
+	return dest
 }
 
 // TODO: 未考虑为单个复制集添加服务器
 func addGroups(src map[int][]string, new map[int][]string) map[int][]string {
+	dest := copyGroups(src)
 	for gid, servers := range new {
-		src[gid] = servers
+		dest[gid] = servers
 	}
-	return src
+	return dest
 }
 
 func (sm *ShardMaster) apply() {

@@ -1,6 +1,9 @@
 package shardmaster
 
-import "log"
+import (
+	"fmt"
+	"log"
+)
 
 //
 // Master shard server: assigns shards to replication groups.
@@ -28,6 +31,29 @@ type Config struct {
 	Num    int              // config number
 	Shards [NShards]int     // shard -> gid
 	Groups map[int][]string // gid -> servers[]
+}
+
+func ConfigCheck(config Config) (bool, string) {
+	occuredGids := make(map[int]struct{})
+	// shard对应的gid应该在group中
+	for _, gid := range config.Shards {
+		_, exist := config.Groups[gid]
+		if !exist {
+			msg := fmt.Sprintf("shard对应的gid不在group中:%v", gid)
+			return exist, msg
+		}
+		occuredGids[gid] = struct{}{}
+	}
+
+	// 除非有move操作，否则group的gid应该都出现在shard中
+	for gid, _ := range config.Groups {
+		_, exist := occuredGids[gid]
+		if !exist {
+			msg := fmt.Sprintf("group的gid没有出现在shard中:%v", gid)
+			return exist, msg
+		}
+	}
+	return true, ""
 }
 
 const (
