@@ -33,6 +33,10 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
+func getConfigStr(config Config) string {
+	return fmt.Sprintf("[Num=%v, Shards=%v, Groups=%v, GroupsNum=%v]", config.Num, config.Shards, config.Groups, len(config.Groups))
+}
+
 func ConfigCheck(config Config) (bool, string) {
 	occuredGids := make(map[int]struct{})
 	// shard对应的gid应该在group中
@@ -108,7 +112,7 @@ type QueryReply struct {
 	Config      Config
 }
 
-const Debug = 1
+const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {

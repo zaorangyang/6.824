@@ -159,6 +159,7 @@ func (sm *ShardMaster) doCommand(op Op) QueryReply {
 		}
 		newConfig.Shards = getShards(lastConfig, len(newConfig.Groups), []int{}, joinArgs.Servers)
 		sm.configs = append(sm.configs, newConfig)
+		DPrintf("[%v] Join success: args=%v ||||||| lastConfig=%v ||||||| newConfig=%v", sm.me, joinArgs, getConfigStr(lastConfig), getConfigStr(newConfig))
 	case "Leave":
 		leaveArgs := op.LeaveArgs
 		lastConfig := sm.getConfig(-1)
@@ -168,6 +169,8 @@ func (sm *ShardMaster) doCommand(op Op) QueryReply {
 		}
 		newConfig.Shards = getShards(lastConfig, len(newConfig.Groups), leaveArgs.GIDs, nil)
 		sm.configs = append(sm.configs, newConfig)
+		DPrintf("[%v] Leave success: args=%v ||||||| lastConfig=%v ||||||| newConfig=%v", sm.me, leaveArgs, getConfigStr(lastConfig), getConfigStr(newConfig))
+
 	case "Move":
 		moveArgs := op.MoveArgs
 		lastConfig := sm.getConfig(-1)
@@ -209,15 +212,20 @@ func getUnAssigedSahrdsAndDelteGidFromTopo(curTopo map[int][]int, leaveGids []in
 	return unAssigedSahrds
 }
 
-func getUnusedGroups(config Config) []int {
+func getUnusedGroups(config Config, leaveGids []int) []int {
 	occuredGids := make(map[int]struct{})
 	for _, gid := range config.Shards {
 		occuredGids[gid] = struct{}{}
 	}
+	leaveGidsMap := make(map[int]struct{})
+	for _, gid := range leaveGids {
+		leaveGidsMap[gid] = struct{}{}
+	}
 	unusedGroups := make([]int, 0)
 	for gid, _ := range config.Groups {
-		_, exist := occuredGids[gid]
-		if !exist {
+		_, existInOccured := occuredGids[gid]
+		_, existInLeaved := leaveGidsMap[gid]
+		if !existInOccured && !existInLeaved {
 			unusedGroups = append(unusedGroups, gid)
 		}
 	}
@@ -247,7 +255,7 @@ func getShards(lastConfig Config, newGroupNum int, leaveGids []int, addServers m
 			}
 		}
 	}
-	unusedGroups := getUnusedGroups(lastConfig)
+	unusedGroups := getUnusedGroups(lastConfig, leaveGids)
 	for len(curTopo) < len(groupLoadShard) {
 		gid := unusedGroups[len(unusedGroups)-1]
 		unusedGroups = unusedGroups[:len(unusedGroups)-1]

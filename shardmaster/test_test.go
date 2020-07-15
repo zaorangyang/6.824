@@ -509,3 +509,42 @@ func TestSSSS(t *testing.T) {
 
 	fmt.Printf("  ... Passed\n")
 }
+
+func TestZZZ(t *testing.T) {
+	const nservers = 3
+	cfg := make_config(t, nservers, false)
+	defer cfg.cleanup()
+	ck := cfg.makeClient(cfg.All())
+
+	fmt.Printf("Test: Concurrent multi leave/join ...\n")
+
+	const npara = 10
+	var cka [npara]*Clerk
+	for i := 0; i < len(cka); i++ {
+		cka[i] = cfg.makeClient(cfg.All())
+	}
+	gids := make([]int, npara)
+	//var wg sync.WaitGroup
+	for xi := 0; xi < npara; xi++ {
+		//wg.Add(1)
+		gids[xi] = int(xi + 1000)
+		func(i int) {
+			//defer wg.Done()
+			var gid int = gids[i]
+			fmt.Println(gid)
+			cka[i].Join(map[int][]string{
+				gid: []string{
+					fmt.Sprintf("%da", gid),
+					fmt.Sprintf("%db", gid),
+					fmt.Sprintf("%dc", gid)},
+				gid + 1000: []string{fmt.Sprintf("%da", gid+1000)},
+				gid + 2000: []string{fmt.Sprintf("%da", gid+2000)},
+			})
+			cka[i].Leave([]int{gid + 1000, gid + 2000})
+		}(xi)
+	}
+	//wg.Wait()
+	check(t, gids, ck)
+
+	fmt.Printf("  ... Passed\n")
+}
