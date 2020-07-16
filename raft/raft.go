@@ -248,12 +248,6 @@ func (rf *Raft) InstallSnapshot(args *SnapshotArgs, reply *SnapshotReply) {
 		}
 	}
 
-	curSnapshot, ok := readSnapShot(rf.persister)
-	if ok && curSnapshot.LastIndex >= args.Snapshot.LastIndex {
-		DPrintf("InstallSnapshot receive old snapshot")
-		return
-	}
-
 	rf.makeSnapshotWithoutLock(&args.Snapshot)
 }
 
@@ -279,6 +273,12 @@ func (rf *Raft) makeInstallSnapshotArgs() SnapshotArgs {
 }
 
 func (rf *Raft) makeSnapshotWithoutLock(snapshot *Snapshot) {
+	curSnapshot, ok := readSnapShot(rf.persister)
+	if ok && curSnapshot.LastIndex >= snapshot.LastIndex {
+		DPrintf("old snapshot, return...")
+		return
+	}
+
 	rf.log.discardOldLog(snapshot.LastIndex)
 	rf.log.setSnapshotLastIndexAndSnapshotLastTerm(snapshot.LastIndex, snapshot.LastTerm)
 	raftData := rf.getRaftPersistentState()
@@ -828,6 +828,7 @@ func (rf *Raft) candidateFlow() {
 				return
 			}
 			rf.role = Leader
+			rf.initLeader()
 			rf.mu.Unlock()
 			return
 		}
@@ -854,16 +855,16 @@ func (rf *Raft) doReplicateLogOrHearbeart(isHeartbeat bool) {
 	}
 }
 
-func (rf *Raft) leaderFlow() {
-	rf.mu.Lock()
+func (rf *Raft) initLeader() {
 	for i := 0; i < len(rf.nextIndex); i++ {
 		rf.nextIndex[i] = rf.log.getLastLogEntryIndex() + 1
 	}
 	for i := 0; i < len(rf.matchIndex); i++ {
 		rf.matchIndex[i] = 0
 	}
-	rf.mu.Unlock()
+}
 
+func (rf *Raft) leaderFlow() {
 	defer func() {
 		if r := recover(); r != nil {
 			DPrintf("%v", r)

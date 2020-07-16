@@ -61,8 +61,7 @@ func (log *RaftLog) getRaftLogState() string {
 
 // 删除(,guard]所有的日志
 func (log *RaftLog) discardOldLog(guard uint64) {
-	fmt.Println(fmt.Sprintf("discardOldLog, log.Base=%v, len(log)=%v, log.Used=%v, log.In=%v, guard=%v", log.Base, len(log.Log), log.Used, log.In, guard))
-	DPrintf("discardOldLog, log.Base=%v, len(log)=%v, log.Used=%v, log.In=%v, guard=%v", log.Base, len(log.Log), log.Used, log.In, guard)
+	DPrintf("discardOldLog, RaftLogState: %v, guard=%v", log.getRaftLogState(), guard)
 	if guard >= log.In {
 		log.Log = make([]*LogEntry, 0)
 		log.Used = 0
