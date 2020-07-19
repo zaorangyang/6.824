@@ -1,5 +1,10 @@
 package shardmaster
 
+import (
+	"fmt"
+	"log"
+)
+
 //
 // Master shard server: assigns shards to replication groups.
 //
@@ -28,6 +33,33 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
+func getConfigStr(config Config) string {
+	return fmt.Sprintf("[Num=%v, Shards=%v, Groups=%v, GroupsNum=%v]", config.Num, config.Shards, config.Groups, len(config.Groups))
+}
+
+func ConfigCheck(config Config) (bool, string) {
+	occuredGids := make(map[int]struct{})
+	// shard对应的gid应该在group中
+	for _, gid := range config.Shards {
+		_, exist := config.Groups[gid]
+		if !exist {
+			msg := fmt.Sprintf("shard对应的gid不在group中:%v", gid)
+			return exist, msg
+		}
+		occuredGids[gid] = struct{}{}
+	}
+
+	// 除非有move操作，否则group的gid应该都出现在shard中
+	for gid, _ := range config.Groups {
+		_, exist := occuredGids[gid]
+		if !exist {
+			msg := fmt.Sprintf("group的gid没有出现在shard中:%v", gid)
+			return exist, msg
+		}
+	}
+	return true, ""
+}
+
 const (
 	OK = "OK"
 )
@@ -36,6 +68,8 @@ type Err string
 
 type JoinArgs struct {
 	Servers map[int][]string // new GID -> servers mappings
+	ClerkID int64
+	OpID    int64
 }
 
 type JoinReply struct {
@@ -44,7 +78,9 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs    []int
+	ClerkID int64
+	OpID    int64
 }
 
 type LeaveReply struct {
@@ -53,8 +89,10 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard   int
+	GID     int
+	ClerkID int64
+	OpID    int64
 }
 
 type MoveReply struct {
@@ -63,11 +101,22 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num     int // desired config number
+	ClerkID int64
+	OpID    int64
 }
 
 type QueryReply struct {
 	WrongLeader bool
 	Err         Err
 	Config      Config
+}
+
+const Debug = 0
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug > 0 {
+		log.Printf(format, a...)
+	}
+	return
 }

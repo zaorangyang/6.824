@@ -11,7 +11,12 @@ import "math/big"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
-	// Your data here.
+	clerkID int64
+	opID    int64
+}
+
+func getClerkID() int64 {
+	return time.Now().UnixNano()
 }
 
 func nrand() int64 {
@@ -24,20 +29,24 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	// Your code here.
+	ck.clerkID = getClerkID()
 	return ck
 }
 
 func (ck *Clerk) Query(num int) Config {
+	defer func() {
+		ck.opID++
+	}()
 	args := &QueryArgs{}
-	// Your code here.
 	args.Num = num
+	args.ClerkID = ck.clerkID
+	args.OpID = ck.opID
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply QueryReply
 			ok := srv.Call("ShardMaster.Query", args, &reply)
-			if ok && reply.WrongLeader == false {
+			if ok && reply.WrongLeader == false && len(reply.Err) == 0 {
 				return reply.Config
 			}
 		}
@@ -46,16 +55,20 @@ func (ck *Clerk) Query(num int) Config {
 }
 
 func (ck *Clerk) Join(servers map[int][]string) {
+	defer func() {
+		ck.opID++
+	}()
 	args := &JoinArgs{}
-	// Your code here.
 	args.Servers = servers
+	args.ClerkID = ck.clerkID
+	args.OpID = ck.opID
 
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply JoinReply
 			ok := srv.Call("ShardMaster.Join", args, &reply)
-			if ok && reply.WrongLeader == false {
+			if ok && reply.WrongLeader == false && len(reply.Err) == 0 {
 				return
 			}
 		}
@@ -64,16 +77,20 @@ func (ck *Clerk) Join(servers map[int][]string) {
 }
 
 func (ck *Clerk) Leave(gids []int) {
+	defer func() {
+		ck.opID++
+	}()
 	args := &LeaveArgs{}
-	// Your code here.
 	args.GIDs = gids
+	args.ClerkID = ck.clerkID
+	args.OpID = ck.opID
 
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply LeaveReply
 			ok := srv.Call("ShardMaster.Leave", args, &reply)
-			if ok && reply.WrongLeader == false {
+			if ok && reply.WrongLeader == false && len(reply.Err) == 0 {
 				return
 			}
 		}
@@ -82,17 +99,21 @@ func (ck *Clerk) Leave(gids []int) {
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
+	defer func() {
+		ck.opID++
+	}()
 	args := &MoveArgs{}
-	// Your code here.
 	args.Shard = shard
 	args.GID = gid
+	args.ClerkID = ck.clerkID
+	args.OpID = ck.opID
 
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
 			var reply MoveReply
 			ok := srv.Call("ShardMaster.Move", args, &reply)
-			if ok && reply.WrongLeader == false {
+			if ok && reply.WrongLeader == false && len(reply.Err) == 0 {
 				return
 			}
 		}

@@ -27,6 +27,7 @@ func check(t *testing.T, groups []int, ck *Clerk) {
 		for s, g := range c.Shards {
 			_, ok := c.Groups[g]
 			if ok == false {
+				fmt.Println(fmt.Sprintf("config: %v", c))
 				t.Fatalf("shard %v -> invalid group %v", s, g)
 			}
 		}
@@ -110,7 +111,6 @@ func TestBasic(t *testing.T) {
 	if len(sa2) != 3 || sa2[0] != "a" || sa2[1] != "b" || sa2[2] != "c" {
 		t.Fatalf("wrong servers for gid %v: %v\n", gid2, sa2)
 	}
-
 	ck.Leave([]int{gid1})
 	check(t, []int{gid2}, ck)
 	cfa[4] = ck.Query(-1)
@@ -375,6 +375,176 @@ func TestMulti(t *testing.T) {
 			}
 		}
 	}
+
+	fmt.Printf("  ... Passed\n")
+}
+
+func TestGetShards(t *testing.T) {
+	lastConfig := Config{
+		Shards: [NShards]int{400, 300, 100, 100, 200, 100, 100, 200, 100, 100},
+	}
+	shards := getShards(lastConfig, 4, []int{}, map[int][]string{})
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+	fmt.Println("-------------------------------------")
+	addServers := map[int][]string{}
+	addServers[500] = []string{}
+	shards = getShards(lastConfig, 5, []int{}, addServers)
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+	fmt.Println("-------------------------------------")
+	addServers = map[int][]string{}
+	addServers[500] = []string{}
+	addServers[600] = []string{}
+	addServers[700] = []string{}
+	addServers[800] = []string{}
+	addServers[900] = []string{}
+	addServers[1000] = []string{}
+	shards = getShards(lastConfig, 10, []int{}, addServers)
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+	fmt.Println("-------------------------------------")
+	leaveGids := []int{100}
+	shards = getShards(lastConfig, 3, leaveGids, map[int][]string{})
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+	fmt.Println("-------------------------------------")
+	leaveGids = []int{100, 200, 300}
+	shards = getShards(lastConfig, 1, leaveGids, map[int][]string{})
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+	fmt.Println("----------------f---------------------")
+	//2020/07/15 17:54:22 [1] Join success, args:{map[180:[s180b]] 1594806859208962000 1}, lastConfig:{25 [100 160 130 120 110 140 120 170 1180 150] map[160:[s160b] 130:[s130b] 110:[s110b] 120:[s120b] 1180:[s180a] 140:[s140b] 100:[s100b] 170:[s170b] 150:[s150b]]}, newConfig={26 [100 160 130 120 110 140 0 170 1180 150] map[140:[s140b] 160:[s160b] 1180:[s180a] 170:[s170b] 150:[s150b] 120:[s120b] 110:[s110b] 130:[s130b] 100:[s100b] 180:[s180b]]}
+	lastConfig.Shards = [NShards]int{100, 160, 130, 120, 110, 140, 120, 170, 1180, 150}
+	newServer := make(map[int][]string)
+	newServer[180] = make([]string, 0)
+	shards = getShards(lastConfig, 10, []int{}, newServer)
+	for _, gid := range shards {
+		fmt.Println(gid)
+	}
+}
+
+func TestGetCurTopo(t *testing.T) {
+	fmt.Println("----------------1---------------------")
+
+	curTopo := getCurTopo([NShards]int{400, 300, 100, 100, 200, 100, 100, 200, 100, 100})
+	for gid, shards := range curTopo {
+		fmt.Println(gid)
+		for _, shard := range shards {
+			fmt.Println(shard)
+		}
+		fmt.Println("-------------------------------------")
+	}
+	fmt.Println("----------------2---------------------")
+
+	curTopo = getCurTopo([NShards]int{})
+	for gid, shards := range curTopo {
+		fmt.Println(gid)
+		for _, shard := range shards {
+			fmt.Println(shard)
+		}
+		fmt.Println("-------------------------------------")
+	}
+}
+
+func TestGetUnAssigedSahrds(t *testing.T) {
+	fmt.Println("----------------1---------------------")
+	topo := make(map[int][]int)
+	leaveGids := make([]int, 0)
+	unAssigedSahrds := getUnAssigedSahrdsAndDelteGidFromTopo(topo, leaveGids)
+	for _, shard := range unAssigedSahrds {
+		fmt.Println(shard)
+	}
+	fmt.Println("----------------2---------------------")
+	topo[22] = []int{1, 2, 5}
+	topo[11] = []int{4}
+	unAssigedSahrds = getUnAssigedSahrdsAndDelteGidFromTopo(topo, leaveGids)
+	for _, shard := range unAssigedSahrds {
+		fmt.Println(shard)
+	}
+	fmt.Println("----------------3---------------------")
+	leaveGids = append(leaveGids, 22)
+	unAssigedSahrds = getUnAssigedSahrdsAndDelteGidFromTopo(topo, leaveGids)
+	for _, shard := range unAssigedSahrds {
+		fmt.Println(shard)
+	}
+}
+
+func TestSSSS(t *testing.T) {
+	const nservers = 3
+	cfg := make_config(t, nservers, false)
+	defer cfg.cleanup()
+	ck := cfg.makeClient(cfg.All())
+
+	fmt.Printf("Test: Concurrent leave/join ...\n")
+
+	const npara = 10
+	var cka [npara]*Clerk
+	for i := 0; i < len(cka); i++ {
+		cka[i] = cfg.makeClient(cfg.All())
+	}
+	gids := make([]int, npara)
+	//ch := make(chan bool)
+	for xi := 0; xi < npara; xi++ {
+		gids[xi] = int((xi * 10) + 100)
+		func(i int) {
+			//defer func() { ch <- true }()
+			var gid int = gids[i]
+			var sid1 = fmt.Sprintf("s%da", gid)
+			var sid2 = fmt.Sprintf("s%db", gid)
+			cka[i].Join(map[int][]string{gid + 1000: []string{sid1}})
+			cka[i].Join(map[int][]string{gid: []string{sid2}})
+			cka[i].Leave([]int{gid + 1000})
+		}(xi)
+	}
+	//for i := 0; i < npara; i++ {
+	//	<-ch
+	//}
+	check(t, gids, ck)
+
+	fmt.Printf("  ... Passed\n")
+}
+
+func TestZZZ(t *testing.T) {
+	const nservers = 3
+	cfg := make_config(t, nservers, false)
+	defer cfg.cleanup()
+	ck := cfg.makeClient(cfg.All())
+
+	fmt.Printf("Test: Concurrent multi leave/join ...\n")
+
+	const npara = 10
+	var cka [npara]*Clerk
+	for i := 0; i < len(cka); i++ {
+		cka[i] = cfg.makeClient(cfg.All())
+	}
+	gids := make([]int, npara)
+	//var wg sync.WaitGroup
+	for xi := 0; xi < npara; xi++ {
+		//wg.Add(1)
+		gids[xi] = int(xi + 1000)
+		func(i int) {
+			//defer wg.Done()
+			var gid int = gids[i]
+			fmt.Println(gid)
+			cka[i].Join(map[int][]string{
+				gid: []string{
+					fmt.Sprintf("%da", gid),
+					fmt.Sprintf("%db", gid),
+					fmt.Sprintf("%dc", gid)},
+				gid + 1000: []string{fmt.Sprintf("%da", gid+1000)},
+				gid + 2000: []string{fmt.Sprintf("%da", gid+2000)},
+			})
+			cka[i].Leave([]int{gid + 1000, gid + 2000})
+		}(xi)
+	}
+	//wg.Wait()
+	check(t, gids, ck)
 
 	fmt.Printf("  ... Passed\n")
 }
