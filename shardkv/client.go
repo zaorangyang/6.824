@@ -11,7 +11,7 @@ package shardkv
 import "github.com/Drewryz/6.824/labrpc"
 import "crypto/rand"
 import "math/big"
-import "shardmaster"
+import "github.com/Drewryz/6.824/shardmaster"
 import "time"
 
 //
@@ -35,11 +35,16 @@ func nrand() int64 {
 	return x
 }
 
+func getClerkID() int64 {
+	return time.Now().UnixNano()
+}
+
 type Clerk struct {
 	sm       *shardmaster.Clerk
 	config   shardmaster.Config
 	make_end func(string) *labrpc.ClientEnd
-	// You will have to modify this struct.
+	clerkID  int64
+	opID     int64
 }
 
 //
@@ -55,7 +60,7 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
-	// You'll have to add code here.
+	ck.clerkID = getClerkID()
 	return ck
 }
 
@@ -66,9 +71,13 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // You will have to modify this function.
 //
 func (ck *Clerk) Get(key string) string {
+	defer func() {
+		ck.opID++
+	}()
 	args := GetArgs{}
 	args.Key = key
-
+	args.ClerkID = ck.clerkID
+	args.OpID = ck.opID
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
@@ -99,11 +108,15 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
+	defer func() {
+		ck.opID++
+	}()
 	args := PutAppendArgs{}
 	args.Key = key
 	args.Value = value
 	args.Op = op
-
+	args.ClerkID = ck.clerkID
+	args.OpID = ck.opID
 
 	for {
 		shard := key2shard(key)
