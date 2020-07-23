@@ -33,6 +33,31 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
+func (config *Config) Copy() Config {
+	shardsCopy := [NShards]int{}
+	for i, v := range config.Shards {
+		shardsCopy[i] = v
+	}
+	configCopy := Config{
+		Num:    config.Num,
+		Shards: shardsCopy,
+		Groups: copyGroups(config.Groups),
+	}
+	return configCopy
+}
+
+func copyGroups(src map[int][]string) map[int][]string {
+	dest := make(map[int][]string)
+	for gid, servers := range src {
+		serversCopy := make([]string, len(servers))
+		for i := 0; i < len(servers); i++ {
+			serversCopy[i] = servers[i]
+		}
+		dest[gid] = serversCopy
+	}
+	return dest
+}
+
 func getConfigStr(config Config) string {
 	return fmt.Sprintf("[Num=%v, Shards=%v, Groups=%v, GroupsNum=%v]", config.Num, config.Shards, config.Groups, len(config.Groups))
 }

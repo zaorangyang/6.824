@@ -8,11 +8,13 @@ package shardkv
 // talks to the group that holds the key's shard.
 //
 
-import "github.com/Drewryz/6.824/labrpc"
-import "crypto/rand"
-import "math/big"
-import "github.com/Drewryz/6.824/shardmaster"
-import "time"
+import (
+	"crypto/rand"
+	"github.com/Drewryz/6.824/labrpc"
+	"github.com/Drewryz/6.824/shardmaster"
+	"math/big"
+	"time"
+)
 
 //
 // which shard is a key in?
@@ -93,6 +95,7 @@ func (ck *Clerk) Get(key string) string {
 				if ok && (reply.Err == ErrWrongGroup) {
 					break
 				}
+				DPrintf("clerk[%v] Get faild, call=%v, reply=%v", ck.clerkID, ok, reply)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -130,8 +133,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					DPrintf("clerk[%v] PutAppend wrong group", ck.clerkID)
 					break
 				}
+				DPrintf("clerk[%v] PutAppend faild, call=%v, reply=%v", ck.clerkID, ok, reply)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)

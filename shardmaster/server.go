@@ -341,18 +341,6 @@ func getCurTopo(shards [NShards]int) map[int][]int {
 	return curTopo
 }
 
-func copyGroups(src map[int][]string) map[int][]string {
-	dest := make(map[int][]string)
-	for gid, servers := range src {
-		serversCopy := make([]string, len(servers))
-		for i := 0; i < len(servers); i++ {
-			serversCopy[i] = servers[i]
-		}
-		dest[gid] = serversCopy
-	}
-	return dest
-}
-
 // TODO: 未考虑为单个复制集删除服务器
 func removeGroups(src map[int][]string, gids []int) map[int][]string {
 	dest := copyGroups(src)
