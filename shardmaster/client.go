@@ -4,12 +4,16 @@ package shardmaster
 // Shardmaster clerk.
 //
 
-import "github.com/Drewryz/6.824/labrpc"
+import (
+	"github.com/Drewryz/6.824/labrpc"
+	"sync"
+)
 import "time"
 import "crypto/rand"
 import "math/big"
 
 type Clerk struct {
+	mu      sync.Mutex
 	servers []*labrpc.ClientEnd
 	clerkID int64
 	opID    int64
@@ -33,14 +37,18 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	return ck
 }
 
+func (ck *Clerk) getNextOpID() int64 {
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	ck.opID++
+	return ck.opID
+}
+
 func (ck *Clerk) Query(num int) Config {
-	defer func() {
-		ck.opID++
-	}()
 	args := &QueryArgs{}
 	args.Num = num
 	args.ClerkID = ck.clerkID
-	args.OpID = ck.opID
+	args.OpID = ck.getNextOpID()
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
@@ -55,13 +63,10 @@ func (ck *Clerk) Query(num int) Config {
 }
 
 func (ck *Clerk) Join(servers map[int][]string) {
-	defer func() {
-		ck.opID++
-	}()
 	args := &JoinArgs{}
 	args.Servers = servers
 	args.ClerkID = ck.clerkID
-	args.OpID = ck.opID
+	args.OpID = ck.getNextOpID()
 
 	for {
 		// try each known server.
@@ -77,13 +82,10 @@ func (ck *Clerk) Join(servers map[int][]string) {
 }
 
 func (ck *Clerk) Leave(gids []int) {
-	defer func() {
-		ck.opID++
-	}()
 	args := &LeaveArgs{}
 	args.GIDs = gids
 	args.ClerkID = ck.clerkID
-	args.OpID = ck.opID
+	args.OpID = ck.getNextOpID()
 
 	for {
 		// try each known server.
@@ -99,14 +101,11 @@ func (ck *Clerk) Leave(gids []int) {
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
-	defer func() {
-		ck.opID++
-	}()
 	args := &MoveArgs{}
 	args.Shard = shard
 	args.GID = gid
 	args.ClerkID = ck.clerkID
-	args.OpID = ck.opID
+	args.OpID = ck.getNextOpID()
 
 	for {
 		// try each known server.

@@ -53,8 +53,8 @@ func (sm *ShardMaster) getConfig(index int) Config {
 
 func (sm *ShardMaster) opHandler(op Op) QueryReply {
 	reply := QueryReply{}
-	sm.mu.Lock()
 	opIndex, term, isLeader := sm.rf.Start(op)
+	sm.mu.Lock()
 	if !isLeader {
 		reply.WrongLeader = true
 		sm.mu.Unlock()

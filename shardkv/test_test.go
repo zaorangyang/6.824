@@ -1,6 +1,10 @@
 package shardkv
 
-import "github.com/Drewryz/6.824/linearizability"
+import (
+	"github.com/Drewryz/6.824/linearizability"
+	"net/http"
+	_ "net/http/pprof"
+)
 
 import "testing"
 import "strconv"
@@ -87,6 +91,10 @@ func TestStaticShards(t *testing.T) {
 }
 
 func TestJoinLeave(t *testing.T) {
+	go func() {
+		fmt.Println(time.Now().Format("Mon Jan 2 15:04:05 -0700 MST 2006"))
+		http.ListenAndServe(":9999", nil)
+	}()
 	fmt.Printf("Test: join then leave ...\n")
 
 	cfg := make_config(t, 3, false, -1)
@@ -95,6 +103,7 @@ func TestJoinLeave(t *testing.T) {
 	ck := cfg.makeClient()
 
 	cfg.join(0)
+	fmt.Println("mark1")
 
 	n := 10
 	ka := make([]string, n)
@@ -109,6 +118,7 @@ func TestJoinLeave(t *testing.T) {
 	}
 
 	cfg.join(1)
+	fmt.Println("mark2")
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
@@ -116,8 +126,8 @@ func TestJoinLeave(t *testing.T) {
 		ck.Append(ka[i], x)
 		va[i] += x
 	}
-
 	cfg.leave(0)
+	fmt.Println("mark3")
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
@@ -125,12 +135,14 @@ func TestJoinLeave(t *testing.T) {
 		ck.Append(ka[i], x)
 		va[i] += x
 	}
+	fmt.Println("mark4")
 
 	// allow time for shards to transfer.
 	time.Sleep(1 * time.Second)
 
 	cfg.checklogs()
 	cfg.ShutdownGroup(0)
+	fmt.Println("mark5")
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])

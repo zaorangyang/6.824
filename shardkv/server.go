@@ -1,6 +1,7 @@
 package shardkv
 
 import (
+	"fmt"
 	"github.com/Drewryz/6.824/labgob"
 	"github.com/Drewryz/6.824/labrpc"
 	"github.com/Drewryz/6.824/raft"
@@ -18,7 +19,7 @@ func init() {
 	labgob.Register(Op{})
 }
 
-const Debug = 1
+const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -158,7 +159,7 @@ func (kv *ShardKV) doCommand(op Op) (string, string) {
 	case "Get":
 		value, ok = kv.data[op.Key]
 		if !ok {
-			DPrintf("[server] dnot have key: %v", op.Key)
+			DPrintf("[%v:%v] dnot have key=%v, key2shard=%v, ownShards=%v, waitingShards=%v", kv.gid, kv.me, op.Key, key2shard(op.Key), kv.ownShards, kv.waitingShards)
 			value = ""
 			error = ErrNoKey
 		} else {
@@ -239,6 +240,9 @@ func (kv *ShardKV) solveConfig(config shardmaster.Config) {
 	for newShard := range newShards {
 		// 复制集第一次被分配的shard直接拥有即可
 		if kv.curConfig.Num == 0 {
+			if kv.gid == 101 {
+				fmt.Println("yzyzyzyzyzyzyz")
+			}
 			kv.ownShards[newShard] = struct{}{}
 			kv.ownShardsConfigNum[newShard] = config.Num
 			continue
@@ -265,8 +269,9 @@ func (kv *ShardKV) solveGotData(reply GetingDataReply) {
 		return
 	}
 	for key, value := range reply.Data {
-		reply.Data[key] = value
+		kv.data[key] = value
 	}
+
 	kv.ownShards[reply.Shard] = struct{}{}
 	kv.ownShardsConfigNum[reply.Shard] = reply.ConfigNum
 	delete(kv.waitingShards, reply.Shard)
@@ -314,21 +319,27 @@ func (kv *ShardKV) makeSnapshot(lastTerm uint64, lastIndex uint64) {
 
 // leader拉取下一个Config, 并通过raft同步
 func (kv *ShardKV) pullConfig() {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	defer kv.pullConfigTimer.Reset(pullConfigInterval)
+	kv.mu.Lock()
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
+		kv.mu.Unlock()
 		return
 	}
 	if len(kv.waitingShards) > 0 {
+		kv.mu.Unlock()
 		return
 	}
 	nextConfigNum := kv.curConfig.Num + 1
+	kv.mu.Unlock()
 	nextConfig := kv.mck.Query(nextConfigNum)
 	// TODO: 如果curConfig迟迟没有得到更新，会有大量的协程涌入
+	kv.mu.Lock()
 	if nextConfig.Num > kv.curConfig.Num {
+		kv.mu.Unlock()
 		kv.rf.Start(nextConfig.Copy())
+	} else {
+		kv.mu.Unlock()
 	}
 }
 
