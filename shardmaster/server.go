@@ -1,12 +1,13 @@
 package shardmaster
 
 import (
-	"github.com/Drewryz/6.824/labgob"
-	"github.com/Drewryz/6.824/labrpc"
-	"github.com/Drewryz/6.824/raft"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/zaorangyang/6.824/labgob"
+	"github.com/zaorangyang/6.824/labrpc"
+	"github.com/zaorangyang/6.824/raft"
 )
 
 const opTimeOut = 2 * time.Second

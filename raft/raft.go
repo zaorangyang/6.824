@@ -20,8 +20,6 @@ package raft
 import (
 	"bytes"
 	"fmt"
-	"github.com/Drewryz/6.824/labgob"
-	"github.com/Drewryz/6.824/labrpc"
 	"math/rand"
 	"os"
 	"runtime/debug"
@@ -29,6 +27,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zaorangyang/6.824/labgob"
+	"github.com/zaorangyang/6.824/labrpc"
 )
 
 type ApplyMsg struct {

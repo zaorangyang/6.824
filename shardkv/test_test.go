@@ -1,18 +1,18 @@
 package shardkv
 
 import (
-	"github.com/Drewryz/6.824/linearizability"
+	"fmt"
+	"math/rand"
 	"net/http"
 	_ "net/http/pprof"
-)
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
 
-import "testing"
-import "strconv"
-import "time"
-import "fmt"
-import "sync/atomic"
-import "sync"
-import "math/rand"
+	"github.com/zaorangyang/6.824/linearizability"
+)
 
 const linearizabilityCheckTimeout = 1 * time.Second
 

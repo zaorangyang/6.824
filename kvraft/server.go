@@ -1,13 +1,14 @@
 package raftkv
 
 import (
-	"github.com/Drewryz/6.824/labgob"
-	"github.com/Drewryz/6.824/labrpc"
-	"github.com/Drewryz/6.824/raft"
 	"log"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/zaorangyang/6.824/labgob"
+	"github.com/zaorangyang/6.824/labrpc"
+	"github.com/zaorangyang/6.824/raft"
 )
 
 const Debug = 0
@@ -220,9 +221,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.finishChans = make(map[int]chan string)
 	kv.reqTerm = make(map[int]int)
+	// data就是存储数据的地方，data也可以看出是状态机
+	// 所以，对于一个数据库系统，用户数据的最终落盘还是经过server的
 	kv.data = make(map[string]string)
 	kv.clerkBolts = make(map[int64]int64)
 	kv.persister = persister
+	// applyCh是一个通道，当raft对于command达成共识后，会通过该通道将达成共识的通道输出
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	go kv.apply()
 	return kv

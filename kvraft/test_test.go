@@ -1,18 +1,19 @@
 package raftkv
 
 import (
-	"github.com/Drewryz/6.824/linearizability"
-)
+	"log"
+	"math/rand"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
 
-import "testing"
-import "strconv"
-import "time"
-import "math/rand"
-import "log"
-import "strings"
-import "sync"
-import "sync/atomic"
-import _ "net/http/pprof"
+	"github.com/zaorangyang/6.824/linearizability"
+
+	_ "net/http/pprof"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
